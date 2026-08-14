@@ -21,9 +21,10 @@ use std::{
 use crate::{
     atuple::{ArithTuple, StrideScalar, as_tuple, make_basis_like, proj, unit},
     error::{Error, Result},
+    ht,
     htuple::{HTuple, congruent, slice_, transform_apply_leaf},
     shape::idx2crd,
-    stride::{Coshape, inner_product, prefix_product},
+    stride::{Coshape, coalesce_z, inner_product, prefix_product},
     typedefs::{Int, IntTuple, Stride},
 };
 
@@ -139,7 +140,95 @@ impl Layout {
             self.stride.get(mode).ok_or_else(bad_path)?.clone(),
         ))
     }
+
+    /// Coalesces the layout per `profile`, keeping size-1 modes.
+    /// PyCuTe's `Layout._coalesce_z`.
+    ///
+    /// Returns [`Error::RankMismatch`] when `profile` outranks the
+    /// layout.
+    pub fn coalesce_z(&self, profile: &Profile) -> Result<Self> {
+        self.coalesce_with("coalesce_z", profile, &|shape, stride| Ok((shape, stride)))
+    }
+
+    /// Coalesces the layout per `profile`. PyCuTe's `Layout._coalesce`.
+    ///
+    /// This is [`Self::coalesce_z`] plus one step: a trailing size-1
+    /// mode is dropped, so long as it is not the only one left.
+    ///
+    /// Returns [`Error::RankMismatch`] when `profile` outranks the
+    /// layout.
+    pub fn coalesce(&self, profile: &Profile) -> Result<Self> {
+        self.coalesce_with(
+            "coalesce",
+            profile,
+            &|shape, stride| match (&shape, &stride) {
+                (HTuple::Tuple(s), HTuple::Tuple(d))
+                    if s.len() > 1 && s.last() == Some(&ht!(1)) =>
+                {
+                    Ok((
+                        HTuple::Tuple(s[..s.len() - 1].to_vec()),
+                        HTuple::Tuple(d[..d.len() - 1].to_vec()),
+                    ))
+                }
+                _ => Ok((shape, stride)),
+            },
+        )
+    }
+
+    /// The body the two coalesce variants share. PyCuTe repeats it; the
+    /// two differ only in `trim`, which runs on the folded shape and
+    /// stride before they are unwrapped.
+    fn coalesce_with(
+        &self,
+        op: &'static str,
+        profile: &Profile,
+        trim: &impl Fn(IntTuple, Stride) -> Result<(IntTuple, Stride)>,
+    ) -> Result<Self> {
+        match profile {
+            // A `None` profile is the no-op.
+            HTuple::Leaf(None) => Ok(self.clone()),
+            // A tuple profile dispatches by mode. PyCuTe zips the layout
+            // against it with `zip_longest`, so the modes the profile
+            // runs out on take the no-op.
+            HTuple::Tuple(modes) => {
+                if self.shape.rank() < modes.len() {
+                    return Err(Error::RankMismatch {
+                        op,
+                        value: format!("{self}"),
+                        profile: format!("{profile:?}"),
+                    });
+                }
+                (0..self.shape.rank())
+                    .map(|i| {
+                        self.index(i)?.coalesce_with(
+                            op,
+                            modes.get(i).unwrap_or(&HTuple::Leaf(None)),
+                            trim,
+                        )
+                    })
+                    .collect::<Result<Vec<_>>>()
+                    .map(make_layout)
+            }
+            HTuple::Leaf(Some(_)) => {
+                let (shape, stride) = coalesce_z(&self.shape, &self.stride)?;
+                // An empty fold means every mode dropped away. What is
+                // left is the one-element layout.
+                if shape.rank() == 0 {
+                    return Ok(Layout::set(ht!(1), Stride::Leaf(0.into())));
+                }
+                let (shape, stride) = trim(shape, stride)?;
+                Ok(Layout::set(shape.unwrap().clone(), stride.unwrap().clone()))
+            }
+        }
+    }
 }
+
+/// The by-mode profile of a coalesce. PyCuTe writes `1` to coalesce a
+/// mode, `None` to leave it alone, and a tuple to dispatch by mode.
+///
+/// Only the presence of the leaf is read, never its value — PyCuTe's `1`
+/// is a placeholder. The [`Int`] is kept so the two spellings match.
+pub type Profile = HTuple<Option<Int>>;
 
 /// Shape of the codomain. PyCuTe's `_coshape`.
 ///

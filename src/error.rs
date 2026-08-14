@@ -50,6 +50,15 @@ pub enum Error {
     /// condition" failures.
     #[error("divisibility condition violated: {detail}")]
     Divisibility { detail: String },
+
+    /// A by-mode operation got a profile of higher rank than the value
+    /// it dispatches over. PyCuTe's "Rank mismatch" failures.
+    #[error("rank mismatch: {op}({value}, {profile})")]
+    RankMismatch {
+        op: &'static str,
+        value: String,
+        profile: String,
+    },
 }
 
 /// The crate's result alias.

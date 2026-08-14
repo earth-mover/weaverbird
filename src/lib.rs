@@ -27,9 +27,13 @@
 pub mod atuple;
 pub mod error;
 pub mod htuple;
+pub mod stride;
 pub mod typedefs;
 
 pub use atuple::{ArithTuple, StrideScalar, basis_repr, e, is_basis, make_basis_like, proj, unit};
 pub use error::{Error, Result};
 pub use htuple::HTuple;
+// `coalesce_z` stays behind its module, as PyCuTe keeps `_coalesce_z`
+// private to `stride.py`; the exported `coalesce_z` is the `Layout` one.
+pub use stride::{Coshape, coprofile, coshape, inner_product, prefix_product, stride};
 pub use typedefs::{Int, IntTuple, Stride};

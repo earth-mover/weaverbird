@@ -33,6 +33,7 @@
 pub mod atuple;
 pub mod error;
 pub mod htuple;
+pub mod layout;
 pub mod shape;
 pub mod stride;
 pub mod typedefs;
@@ -43,6 +44,10 @@ pub use atuple::{
 };
 pub use error::{Error, Result};
 pub use htuple::HTuple;
+pub use layout::{
+    Layout, Scale, Tiler, TilerLeaf, make_layout, make_layout_like, make_ordered_layout, recast,
+    tiler_to_layout,
+};
 pub use shape::{
     common_coarsening, common_refinement, compatible, coordinates, crd2idx, depth, idx2crd, rank,
     shape, size,

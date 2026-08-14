@@ -36,6 +36,20 @@ pub enum Error {
     /// differ, or a tuple coordinate met an integer shape.
     #[error("idx2crd({idx}, {shape})")]
     BadCoord { idx: String, shape: String },
+
+    /// Two hierarchical tuples that had to share a profile do not.
+    #[error("{lhs} and {rhs} are not congruent")]
+    NotCongruent { lhs: String, rhs: String },
+
+    /// A product needed one integer operand and got two arithmetic
+    /// tuples. Their product leaves the module.
+    #[error("no product for {lhs} * {rhs}")]
+    NoProduct { lhs: String, rhs: String },
+
+    /// A division did not come out even. PyCuTe's "divisibility
+    /// condition" failures.
+    #[error("divisibility condition violated: {detail}")]
+    Divisibility { detail: String },
 }
 
 /// The crate's result alias.

@@ -32,17 +32,35 @@ Python raises. This crate returns `Result`.
 extends trailing positions by zero. `Hash` therefore hashes a trimmed
 form, so that equal values hash alike.
 
+PyCuTe tells a concrete integer from a symbolic one with `is_static`, and
+guards its stride orderings with it. `Int` is the only integer here, so
+`is_static` would always be true. The crate omits it, and those orderings
+collapse to a plain — but stable — sort.
+
+PyCuTe's `layout.py` and `algebra.py` import each other: `_composition`
+reaches for `algebra.layout_add`, and `_logical_divide` for
+`algebra.complement`. Rust modules cannot circle that way, so the
+algorithms all live in `layout.rs`, where `layout.py` puts them, and
+`algebra.rs` is the thin free-function facade over them. `layout_add` and
+`greatest_common_domain` are the exception: they are `algebra.py`
+functions that `layout.rs` calls, so the dependency runs
+`layout.rs → algebra.rs` and stays one-way.
+
 ## State
 
 | module | PyCuTe source | state |
 |---|---|---|
 | `htuple` | `htuple.py` | ported |
 | `atuple` | `atuple.py` | ported |
-| `shape` | `shape.py` | to do |
-| `stride` | `stride.py` | to do |
-| `layout` | `layout.py` | to do |
-| `algebra` | `algebra.py` | to do |
+| `shape` | `shape.py` | ported |
+| `stride` | `stride.py` | ported |
+| `layout` | `layout.py` | core ported; algebra in progress |
+| `algebra` | `algebra.py` | in progress |
 | `swizzle`, `accessor`, `tensor` | — | not planned |
+
+`tensor.py` and `accessor.py` are out of scope on purpose. This crate is
+the layout algebra — shapes, strides, and the operations over them. It
+carries no data and addresses no memory.
 
 ## Licence
 

@@ -19,7 +19,10 @@ use std::{
 };
 
 use crate::{
-    atuple::{ArithTuple, StrideScalar, as_tuple, make_basis_like, proj, proj_tuple_mut, unit},
+    algebra::layout_add,
+    atuple::{
+        ArithTuple, StrideScalar, as_tuple, basis_repr, make_basis_like, proj, proj_tuple_mut, unit,
+    },
     error::{Error, Result},
     ht,
     htuple::{
@@ -1112,4 +1115,252 @@ fn modes_of<T>(acc: HTuple<Vec<T>>) -> HTuple<T> {
 /// is read, so the value carries over untouched.
 fn as_profile(coprof: &IntTuple) -> Profile {
     coprof.transform_leaf(&|v| Some(*v))
+}
+
+// ---------------------------------------------------------------------------
+// composition
+// ---------------------------------------------------------------------------
+
+/// The right-hand side of a composition: a [`Tiler`] whose modes may be
+/// absent.
+///
+/// PyCuTe annotates `_composition`'s argument `Tiler`, then opens the
+/// function by reading a `None` its own alias does not admit — the
+/// per-mode no-op, as in `composition(A, (X, None))`. The [`Option`]
+/// here is what carries that case, and it sits at the leaf rather than
+/// around the whole tuple, so a mode can be absent on its own.
+///
+/// That is where [`Profile`] puts it too, and for the same reason: the
+/// whole no-op and the per-mode no-op are then one spelling at two
+/// depths, `HTuple::Leaf(None)`.
+pub type OptTiler = HTuple<Option<TilerLeaf>>;
+
+impl Layout {
+    /// Composes this layout with `b`: the group composition `A o B`
+    /// (Whitepaper, §3.3). PyCuTe's `Layout._composition`.
+    ///
+    /// The result has `b`'s domain and this layout's values — walk `b`,
+    /// then map what it produces through `self`. A tuple `b` composes
+    /// by-mode, and an absent `b` is the no-op.
+    ///
+    /// Pre-conditions:
+    ///   `self` and `b` satisfy the shape- and stride-divisibility
+    ///   conditions (Whitepaper, Eqs. (20)-(21)).
+    ///
+    /// Post-conditions:
+    ///   `compatible(shape(b), shape(result))`,
+    ///   `result(i) == self(b(i))` for every `i` in the domain of `b`.
+    ///
+    /// ```text
+    /// composition(Layout((6, 2), (8, 2)), Layout((4, 3), (3, 1))) == Layout(((2, 2), 3), ((24, 2), 8))
+    /// composition(Layout(20, 2),          Layout((5, 4), (4, 1))) == Layout((5, 4), (8, 2))
+    /// composition(Layout(12),             Layout((4, 3)))         == Layout((4, 3), (1, 4))
+    /// ```
+    ///
+    /// Returns [`Error::RankMismatch`] when a tiler tuple outranks this
+    /// layout, and [`Error::Divisibility`] when either divisibility
+    /// condition fails.
+    pub fn composition(&self, b: &OptTiler) -> Result<Self> {
+        let b = match b {
+            // RHS None, noop.
+            HTuple::Leaf(None) => return Ok(self.clone()),
+            // RHS tuple, (A0,A1,...) o <X,Y,...> => (A0 o X, A1 o Y, ...).
+            HTuple::Tuple(modes) => {
+                if self.shape.rank() < modes.len() {
+                    return Err(Error::RankMismatch {
+                        op: "composition",
+                        value: format!("{self}"),
+                        profile: format!("{b:?}"),
+                    });
+                }
+                // PyCuTe zips the layout against the tiler with
+                // `zip_longest`, so the modes the tiler runs out on take
+                // the no-op.
+                return (0..self.shape.rank())
+                    .map(|i| {
+                        self.index(i)?
+                            .composition(modes.get(i).unwrap_or(&HTuple::Leaf(None)))
+                    })
+                    .collect::<Result<Vec<_>>>()
+                    .map(make_layout);
+            }
+            // RHS int, A o N -> A o N:1.
+            HTuple::Leaf(Some(TilerLeaf::Int(n))) => {
+                Layout::set(HTuple::Leaf(*n), HTuple::Leaf(StrideScalar::Int(1)))
+            }
+            HTuple::Leaf(Some(TilerLeaf::Layout(l))) => l.clone(),
+        };
+
+        //
+        // Special cases with A: Layout and B: Layout
+        //
+
+        let a = self.coalesce_z(&as_profile(&coprofile(&b, &[])?))?;
+
+        // RHS distributive, A o (X,Y,...) => (A o X, A o Y, ...).
+        if b.shape.is_tuple() {
+            return (0..b.shape.rank())
+                .map(|i| a.composition(&HTuple::Leaf(Some(TilerLeaf::Layout(b.index(i)?)))))
+                .collect::<Result<Vec<_>>>()
+                .map(make_layout);
+        }
+        // Special case stride-0, A o N:0 => N:0.
+        if b.stride == HTuple::Leaf(StrideScalar::Int(0)) {
+            return Ok(Layout::set(
+                b.shape.clone(),
+                HTuple::Leaf(StrideScalar::Int(0)),
+            ));
+        }
+        // `b.shape` is no longer a tuple, so both halves are leaves. A
+        // stride that is not is an incongruent layout, which PyCuTe
+        // walks into rather than checks for.
+        let (HTuple::Leaf(b_shape), HTuple::Leaf(b_stride)) = (&b.shape, &b.stride) else {
+            return Err(Error::BadPath {
+                path: vec![],
+                value: format!("{b}"),
+            });
+        };
+        // Special case shape-1, A o 1:M => 1:A(M).
+        if *b_shape == 1 {
+            return Ok(Layout::set(
+                b.shape.clone(),
+                HTuple::Leaf(a.call(&as_tuple(b_stride))?),
+            ));
+        }
+
+        //
+        // General case   (A0,A1,...) o N:M
+        //
+
+        let shape_divisibility = || Error::Divisibility {
+            detail: format!("shape condition: composition({self}, {b})"),
+        };
+        let stride_divisibility = || Error::Divisibility {
+            detail: format!("stride condition: composition({self}, {b})"),
+        };
+
+        // A mutating index-walk over `result_s` / `result_d`, as PyCuTe
+        // writes it: each basis term of `B`'s stride truncates one
+        // sublayout of `A` and shifts it into place.
+        let mut acc: Option<Layout> = None;
+        for (mut stride_b, basis_b) in basis_repr(b_stride) {
+            let ab = a.get(&basis_b)?;
+            let (mut result_s, mut result_d) = flat_modes(&ab)?;
+
+            // Truncate/extend result_s based on strideB * B.shape.
+            let last = result_s.len() - 1;
+            result_s[last] = stride_b * *b_shape;
+            for i in 0..last {
+                let (quotient, r_es) =
+                    divmod(result_s[last], result_s[i]).ok_or_else(shape_divisibility)?;
+                result_s[last] = quotient;
+                if result_s[last] == 0 {
+                    result_s[i] = r_es;
+                    result_s.truncate(i + 1);
+                    result_d.truncate(i + 1);
+                    break;
+                }
+                if r_es != 0 {
+                    return Err(shape_divisibility());
+                }
+            }
+
+            // Remove result_s prefix strideB.
+            //
+            // PyCuTe closes this loop with a `for ... else`: the `else`
+            // body runs only when the loop completes *without* `break`.
+            // Rust has no such form, so `broke` stands in for it.
+            let mut broke = false;
+            for i in 0..result_s.len() - 1 {
+                let (q_sd, r_sd) = divmod(result_s[i], stride_b).ok_or_else(stride_divisibility)?;
+                if r_sd == 0 {
+                    result_s[i] = q_sd;
+                    result_d[i] = result_d[i].scale(stride_b);
+                    broke = true;
+                    break;
+                }
+                let (q_ds, r_ds) = divmod(stride_b, result_s[i]).ok_or_else(stride_divisibility)?;
+                stride_b = q_ds;
+                result_s[i] = 1;
+                if r_ds != 0 {
+                    return Err(stride_divisibility());
+                }
+            }
+            // The `else` clause.
+            if !broke {
+                let last = result_s.len() - 1;
+                result_s[last] = divmod(result_s[last], stride_b)
+                    .ok_or_else(stride_divisibility)?
+                    .0;
+                result_d[last] = result_d[last].scale(stride_b);
+            }
+
+            // Accumulate into resultL. PyCuTe seeds `resultL` with
+            // `None`, which is why only the left operand of `layout_add`
+            // is optional.
+            acc = Some(layout_add(
+                acc.as_ref(),
+                &Layout::set(
+                    HTuple::Tuple(result_s.into_iter().map(HTuple::Leaf).collect()),
+                    HTuple::Tuple(result_d.into_iter().map(HTuple::Leaf).collect()),
+                ),
+            )?);
+        }
+
+        match acc {
+            // PyCuTe's default coalesce profile, `1`.
+            Some(result) => result.coalesce(&HTuple::Leaf(Some(1))),
+            // [`basis_repr`] yields at least one term — an all-zero
+            // element decomposes to `(0, [])` — so the fold above always
+            // runs and this arm stands for the type alone.
+            None => Err(Error::NotBasis {
+                value: format!("{b_stride:?}"),
+            }),
+        }
+    }
+}
+
+/// The top-level modes of a layout, as PyCuTe's `list(wrap(Ab.shape))`
+/// and `list(wrap(Ab.stride))`.
+///
+/// `Ab` is a sublayout of the coalesced `A`, so it is flat and every mode
+/// is a leaf. A nested mode is where PyCuTe's `divmod` meets a tuple.
+///
+/// The result is non-empty and the two halves have equal length, which is
+/// what lets the walk above index `result_s.len() - 1`.
+fn flat_modes(ab: &Layout) -> Result<(Vec<Int>, Vec<StrideScalar>)> {
+    let bad_path = || Error::BadPath {
+        path: vec![],
+        value: format!("{ab}"),
+    };
+    let result_s = top_level_leaves(&ab.shape).ok_or_else(bad_path)?;
+    let result_d = top_level_leaves(&ab.stride).ok_or_else(bad_path)?;
+    match !result_s.is_empty() && result_s.len() == result_d.len() {
+        true => Ok((result_s, result_d)),
+        false => Err(bad_path()),
+    }
+}
+
+/// The leaves one level down. PyCuTe's `list(wrap(x))`, which is a list
+/// of leaves exactly when `x` is flat.
+///
+/// Returns `None` for a mode that is itself a tuple.
+fn top_level_leaves<T: Clone>(x: &HTuple<T>) -> Option<Vec<T>> {
+    match x {
+        HTuple::Leaf(v) => Some(vec![v.clone()]),
+        HTuple::Tuple(modes) => modes
+            .iter()
+            .map(|m| match m {
+                HTuple::Leaf(v) => Some(v.clone()),
+                HTuple::Tuple(_) => None,
+            })
+            .collect(),
+    }
+}
+
+/// Python's `divmod`, over the positive extents and strides this walk
+/// carries. A zero divisor raises there; here the caller turns the
+/// `None` into the divisibility error of its own loop.
+fn divmod(a: Int, b: Int) -> Option<(Int, Int)> {
+    (b != 0).then(|| (a.div_euclid(b), a.rem_euclid(b)))
 }

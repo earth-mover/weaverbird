@@ -51,6 +51,12 @@ pub enum Error {
     #[error("divisibility condition violated: {detail}")]
     Divisibility { detail: String },
 
+    /// A layout that had to be injective is not: two of its modes
+    /// overlap, so they send different coordinates to the same codomain
+    /// value. PyCuTe's "Non-injective layout" failures.
+    #[error("non-injective layout: {value}")]
+    NonInjective { value: String },
+
     /// A by-mode operation got a profile of higher rank than the value
     /// it dispatches over. PyCuTe's "Rank mismatch" failures.
     #[error("rank mismatch: {op}({value}, {profile})")]

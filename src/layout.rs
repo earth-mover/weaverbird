@@ -19,12 +19,14 @@ use std::{
 };
 
 use crate::{
-    atuple::{ArithTuple, StrideScalar, as_tuple, make_basis_like, proj, unit},
+    atuple::{ArithTuple, StrideScalar, as_tuple, make_basis_like, proj, proj_tuple_mut, unit},
     error::{Error, Result},
     ht,
-    htuple::{HTuple, congruent, slice_, transform_apply_leaf},
+    htuple::{
+        HTuple, congruent, slice_, transform_apply_leaf, transform_apply_leaf4, zip3_transform_leaf,
+    },
     shape::idx2crd,
-    stride::{Coshape, coalesce_z, inner_product, prefix_product},
+    stride::{Coshape, coalesce_z, coprofile, inner_product, prefix_product},
     typedefs::{Int, IntTuple, Stride},
 };
 
@@ -650,4 +652,211 @@ fn recast_leaf(shape: Int, stride: &StrideScalar, scale: Scale) -> Result<Layout
         HTuple::Leaf(ceil_div(shape, if rnd { qnd } else { 1 })),
         HTuple::Leaf(unit(stride)?.scale(if rdn { qdn } else { 1 })),
     ))
+}
+
+// ---------------------------------------------------------------------------
+// complement
+// ---------------------------------------------------------------------------
+
+impl Layout {
+    /// The complement of this layout, optionally extended to cover
+    /// `extend`. PyCuTe's `Layout._complement`.
+    ///
+    /// The complement walks this layout's modes in stride order and
+    /// records the gaps they leave behind, one running position per
+    /// codomain position. The result is the layout of those gaps, so
+    /// that `make_layout([self, self.complement(None)])` covers the
+    /// whole codomain without repeating a value.
+    ///
+    /// `extend` is PyCuTe's optional argument, so it arrives as an
+    /// [`Option`]. When it is present, the trailing mode of each
+    /// complement mode is grown until it spans `extend`.
+    ///
+    /// Post-conditions:
+    ///   `weakly_congruent(coprofile(self), shape(result))`,
+    ///   `result` is ordered — `result(i) < result(i+1)`,
+    ///   the codomains of `self` and `result` are disjoint.
+    ///
+    /// ```text
+    /// complement(Layout(4, 1))         == Layout(1, 4)
+    /// complement(Layout((2, 4), (1, 6))) == Layout((3, 1), (2, 24))
+    /// ```
+    ///
+    /// Returns [`Error::NonInjective`] when a mode falls behind the
+    /// running position, and [`Error::NotBasis`] when a stride leaf is a
+    /// sum of basis elements, which has no single codomain position.
+    pub fn complement(&self, extend: Option<&IntTuple>) -> Result<Self> {
+        let coprof = coprofile(self, &[])?;
+        // PyCuTe accumulates into profile-shaped tuples whose leaves are
+        // mutable lists. The lists are `Vec<Int>` here, for both halves:
+        // every value pushed below is an integer — `d` is the
+        // coefficient `proj` reads off a stride leaf, and `s` an extent
+        // — so the strides become [`StrideScalar`]s only where the
+        // per-position layouts are built.
+        let mut result_s = HTuple::<Vec<Int>>::repeat_like(&Vec::new(), &coprof);
+        let mut result_d = HTuple::<Vec<Int>>::repeat_like(&Vec::from([1]), &coprof);
+
+        // Modes are ordered by stride. PyCuTe orders only the static
+        // strides, since a symbolic one has no known place; [`Int`] is
+        // always static, so the sort is plain — but still *stable*,
+        // which keeps equal strides in left-to-right order.
+        let mut modes = self
+            .stride
+            .leaves()
+            .into_iter()
+            .zip(self.shape.leaves())
+            .collect::<Vec<_>>();
+        modes.sort_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+
+        // A mutating fold, as PyCuTe writes it: each mode reads the
+        // running position its own codomain position left behind, and
+        // leaves a new one.
+        for (de, &s) in modes {
+            let d = proj(de, de)?;
+            if d.is_zero() || s == 1 {
+                continue;
+            }
+            let d = coefficient(d)?;
+            let result_s = accumulator(&mut result_s, de)?;
+            let result_d = accumulator(&mut result_d, de)?;
+            let position = *result_d.last().ok_or_else(|| Error::BadPath {
+                path: vec![],
+                value: format!("{self}"),
+            })?;
+            if d < position {
+                return Err(Error::NonInjective {
+                    detail: format!("complement({self})"),
+                });
+            }
+            result_s.push(d.checked_div(position).ok_or_else(|| Error::Divisibility {
+                detail: format!("complement({self}): a mode of extent 0"),
+            })?);
+            result_d.push(d * s);
+        }
+
+        // One layout per codomain position, each closed with the extent
+        // `1` that `extend` below grows. PyCuTe's `transform_leaf` pads
+        // with `zip_longest`; the three tuples are congruent by
+        // construction, so the strict zip does the same work.
+        let tiler = zip3_transform_leaf(
+            &|_: &Int, result_s: &Vec<Int>, result_d: &Vec<Int>| {
+                Layout::set(
+                    HTuple::Tuple(
+                        result_s
+                            .iter()
+                            .copied()
+                            .chain([1])
+                            .map(HTuple::Leaf)
+                            .collect(),
+                    ),
+                    HTuple::Tuple(
+                        result_d
+                            .iter()
+                            .map(|&d| HTuple::Leaf(StrideScalar::Int(d)))
+                            .collect(),
+                    ),
+                )
+                // PyCuTe's default coalesce profile, `1`.
+                .coalesce_z(&HTuple::Leaf(Some(1)))
+                .map(TilerLeaf::Layout)
+            },
+            &coprof,
+            &result_s,
+            &result_d,
+        )?;
+        let result = tiler_to_layout(&tiler, &StrideScalar::Int(1))?;
+
+        let Some(extend) = extend else {
+            return Ok(result);
+        };
+        // PyCuTe drives this with `zip_longest` padding and *reads* the
+        // padding: an absent complement mode means `extend` outranks the
+        // codomain there, and the extend mode stands on its own.
+        let extend_complement = |_: Option<&IntTuple>,
+                                 shape_c: Option<&IntTuple>,
+                                 stride_c: Option<&Stride>,
+                                 shape_a: Option<&IntTuple>,
+                                 stride_a: Option<&Stride>| {
+            let rank_mismatch = || Error::RankMismatch {
+                op: "complement",
+                value: format!("{self}"),
+                profile: format!("{extend:?}"),
+            };
+            let (Some(shape_c), Some(stride_c)) = (shape_c, stride_c) else {
+                return match (shape_a, stride_a) {
+                    (Some(shape_a), Some(stride_a)) => {
+                        Ok(Layout::set(shape_a.clone(), stride_a.clone()))
+                    }
+                    _ => Err(rank_mismatch()),
+                };
+            };
+            let shape_a = shape_a.ok_or_else(rank_mismatch)?;
+            // The last extent of the complement is always 1, so its
+            // stride is the size the extension starts from.
+            let size_c = match stride_c.back() {
+                HTuple::Leaf(d) => coefficient(proj(d, d)?)?,
+                other => {
+                    return Err(Error::NotBasis {
+                        value: format!("{other:?}"),
+                    });
+                }
+            };
+            let (shape_r, _) = shape_a.leaves().into_iter().try_fold(
+                (Vec::new(), size_c),
+                |(mut shape_r, size_c), &s| match s > 0 && size_c > 0 {
+                    // PyCuTe writes `(s + sizeC - 1) // sizeC` and
+                    // `(s + sizeC - 1) // s`; over positive operands
+                    // those are the two ceiling divisions below.
+                    true => {
+                        shape_r.push(HTuple::Leaf(ceil_div(s, size_c)));
+                        Ok((shape_r, ceil_div(size_c, s)))
+                    }
+                    false => Err(Error::Divisibility {
+                        detail: format!("complement({self}) extended by {extend:?}"),
+                    }),
+                },
+            )?;
+            Layout::new(
+                shape_c.clone().replace_back(HTuple::Tuple(shape_r)),
+                stride_c,
+            )?
+            // PyCuTe's default coalesce profile, `1`.
+            .coalesce(&HTuple::Leaf(Some(1)))
+        };
+        transform_apply_leaf4(
+            &make_layout,
+            &extend_complement,
+            Some(&coprof),
+            Some(&result.shape),
+            Some(&result.stride),
+            Some(extend),
+            Some(&make_basis_like(extend)),
+        )
+    }
+}
+
+/// The integer coefficient of a stride leaf.
+///
+/// Every non-zero leaf [`proj`] reaches is one, so the error stands for
+/// a stride that is a sum of basis elements — an element `complement`
+/// cannot place in the codomain.
+fn coefficient(d: &StrideScalar) -> Result<Int> {
+    match d {
+        StrideScalar::Int(v) => Ok(*v),
+        other => Err(Error::NotBasis {
+            value: format!("{other:?}"),
+        }),
+    }
+}
+
+/// The accumulator list at the codomain position `de` names. PyCuTe
+/// writes `proj(result_S, de)`, and appends to what comes back.
+fn accumulator<'a>(x: &'a mut HTuple<Vec<Int>>, de: &StrideScalar) -> Result<&'a mut Vec<Int>> {
+    match proj_tuple_mut(x, de)? {
+        HTuple::Leaf(list) => Ok(list),
+        other => Err(Error::BadPath {
+            path: vec![],
+            value: format!("{other:?}"),
+        }),
+    }
 }

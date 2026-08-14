@@ -14,6 +14,12 @@ pub enum Error {
     #[error("{value} is not a basis element")]
     NotBasis { value: String },
 
+    /// A layout sends two coordinates to one codomain value, and the
+    /// operation needs it not to. PyCuTe's "Non-injective layout"
+    /// failures.
+    #[error("non-injective layout: {detail}")]
+    NonInjective { detail: String },
+
     /// A path ran past a leaf, or off the end of a tuple.
     #[error("path {path:?} does not address {value}")]
     BadPath { path: Vec<usize>, value: String },

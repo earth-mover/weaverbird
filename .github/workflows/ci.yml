@@ -10,7 +10,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-permissions: {}
+# Only what checkout needs to clone this (private) repo.
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always

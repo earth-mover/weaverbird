@@ -860,3 +860,256 @@ fn accumulator<'a>(x: &'a mut HTuple<Vec<Int>>, de: &StrideScalar) -> Result<&'a
         }),
     }
 }
+
+// ---------------------------------------------------------------------------
+// the inverses and the nullspace
+// ---------------------------------------------------------------------------
+
+impl Layout {
+    /// Largest right inverse of this layout. PyCuTe's `_right_inverse`.
+    ///
+    /// Walks the modes in stride order and keeps the ones that continue
+    /// the chain `d_k == s_{k-1} * d_{k-1}`, recording each survivor's
+    /// extent against its position in the domain. A mode that carries no
+    /// information — stride 0, or extent 1 — is skipped, and so is any
+    /// mode that breaks the chain, which is what makes the result the
+    /// *largest* right inverse rather than a failure.
+    ///
+    /// Post-conditions:
+    ///   `weakly_congruent(coprofile(self), shape(result))`,
+    ///   `result(self(result(i))) == result(i)` for every `i` in the
+    ///   domain of `result`,
+    ///   `self(result(i)) == i` as well, when the codomain is `Z`.
+    ///
+    /// ```text
+    /// right_inverse(Layout((8, 4), (4, 1))) == Layout((4, 8), (8, 1))
+    /// right_inverse(Layout(4, 2))           == Layout(1, 0)
+    /// ```
+    pub fn right_inverse(&self) -> Result<Self> {
+        let coprof = coprofile(self, &[])?;
+        // One accumulator per position of the codomain. PyCuTe warns
+        // "Avoid aliasing [] from repeat_like"; `repeat_like` clones, so
+        // each leaf holds a vector of its own.
+        //
+        // PyCuTe's `result_S` / `result_D` / `curr_D` are these trees;
+        // its `result_s` / `result_d` / `curr_d` are the leaves projected
+        // out of them inside the loop.
+        let mut result_shape = HTuple::repeat_like(&Vec::<Int>::new(), &coprof);
+        let mut result_stride = HTuple::repeat_like(&Vec::<StrideScalar>::new(), &coprof);
+        let mut curr_stride = HTuple::repeat_like(&StrideScalar::Int(1), &coprof);
+
+        let (flat_s, flat_d) = coalesce_z(&self.shape, &self.stride)?;
+        let pps = prefix_product(&flat_s, &HTuple::Leaf(StrideScalar::Int(1)))?;
+
+        // The chain is followed in stride order. PyCuTe orders only the
+        // static strides; [`Int`] is always static, so `_stride_key`
+        // collapses to a plain sort. It stays *stable*, which is what
+        // keeps equal strides in left-to-right order — and what carries
+        // the strides that do not compare at all.
+        let mut modes = collect_modes(&flat_d, &flat_s, &pps);
+        modes.sort_by(|a, b| a.0.partial_cmp(b.0).unwrap_or(Ordering::Equal));
+
+        // A mutating fold, as PyCuTe writes it: each mode reads and
+        // rewrites the accumulator at its own codomain position.
+        for (de, s, pps) in modes {
+            let d = proj(de, de)?;
+            let result_s = proj_leaf_mut(&mut result_shape, de)?;
+            let result_d = proj_leaf_mut(&mut result_stride, de)?;
+            let curr_d = proj_leaf_mut(&mut curr_stride, de)?;
+
+            // Stride-0 / size-1 modes carry no information.
+            if d.is_zero() || s == 1 {
+                continue;
+            }
+            // A mode that does not continue the chain is dropped.
+            if d != curr_d {
+                continue;
+            }
+            result_s.push(s);
+            result_d.push(pps.clone());
+            *curr_d = d.scale(s);
+        }
+
+        Layout::set(modes_of(result_shape), modes_of(result_stride)).coalesce(&as_profile(&coprof))
+    }
+
+    /// Left inverse of this layout. PyCuTe's `_left_inverse`.
+    ///
+    /// Walks the modes in stride order and pads each recorded extent out
+    /// to the next stride, so the holes between the modes become
+    /// stride-0 filler. Unlike [`Self::right_inverse`], a mode that
+    /// breaks the chain is an error rather than a stopping point: a left
+    /// inverse must account for the whole domain.
+    ///
+    /// Post-conditions:
+    ///   `weakly_congruent(coprofile(self), shape(result))`,
+    ///   `self(result(self(i))) == self(i)` for every `i` in the domain.
+    ///
+    /// ```text
+    /// left_inverse(Layout((8, 4), (4, 1)))  == Layout((4, 8), (8, 1))
+    /// left_inverse(Layout((4, 2), (1, 16))) == Layout((16, 2), (1, 4))
+    /// ```
+    ///
+    /// Returns [`Error::Divisibility`] when the strides do not form an
+    /// ordered chain, and [`Error::NonInjective`] when a mode overlaps
+    /// the one before it.
+    pub fn left_inverse(&self) -> Result<Self> {
+        let coprof = coprofile(self, &[])?;
+        // As in [`Self::right_inverse`], one independent accumulator per
+        // codomain position. These start non-empty: the seed `1:0` mode
+        // is what the first stride pads out to.
+        let mut result_shape = HTuple::repeat_like(&vec![1], &coprof);
+        let mut result_stride = HTuple::repeat_like(&vec![StrideScalar::Int(0)], &coprof);
+        let mut curr_shape = HTuple::repeat_like(&1, &coprof);
+
+        let (flat_s, flat_d) = coalesce_z(&self.shape, &self.stride)?;
+        let pps = prefix_product(&flat_s, &HTuple::Leaf(StrideScalar::Int(1)))?;
+
+        // PyCuTe sorts the raw triples with no key, so the comparison
+        // runs `(stride, extent, position)` lexicographically. The
+        // leading [`StrideScalar`] orders only partially — an integer
+        // does not compare with an arithmetic tuple — so an incomparable
+        // pair falls back on the stable order, as it does above.
+        let mut modes = collect_modes(&flat_d, &flat_s, &pps);
+        modes.sort_by(|a, b| {
+            a.0.partial_cmp(b.0)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| a.1.cmp(&b.1))
+                .then_with(|| a.2.partial_cmp(b.2).unwrap_or(Ordering::Equal))
+        });
+
+        for (de, s, pps) in modes {
+            let d = proj(de, de)?;
+            let result_s = proj_leaf_mut(&mut result_shape, de)?;
+            let result_d = proj_leaf_mut(&mut result_stride, de)?;
+            let curr_s = proj_leaf_mut(&mut curr_shape, de)?;
+
+            // Stride-0 / size-1 modes carry no information.
+            if d.is_zero() || s == 1 {
+                continue;
+            }
+            // The chain is walked with integer arithmetic, so a stride
+            // that projects to anything else has no place on it.
+            let d = match d {
+                StrideScalar::Int(v) => *v,
+                other => {
+                    return Err(Error::NotBasis {
+                        value: format!("{other:?}"),
+                    });
+                }
+            };
+            // gap = d_k / d_{k-1}, the span to the next stride.
+            let (gap, rem) = (d.div_euclid(*curr_s), d.rem_euclid(*curr_s));
+            if rem != 0 {
+                return Err(Error::Divisibility {
+                    detail: format!("left_inverse({self}): strides do not form an ordered chain"),
+                });
+            }
+            // d_k must clear the previous mode: d_k >= d_{k-1} * s_{k-1}.
+            if result_s.last().is_some_and(|&last| gap < last) {
+                return Err(Error::NonInjective {
+                    detail: format!("left_inverse({self})"),
+                });
+            }
+            // Pad the previous mode out to d_k; the extra entries are
+            // holes.
+            if let Some(last) = result_s.last_mut() {
+                *last = gap;
+            }
+            // Advance the consumed stride to d_k.
+            *curr_s *= gap;
+            // Record this mode. A later mode overwrites `s` with its own
+            // gap.
+            result_s.push(s);
+            result_d.push(pps.clone());
+        }
+
+        Layout::set(modes_of(result_shape), modes_of(result_stride))
+            .coalesce_z(&as_profile(&coprof))
+    }
+
+    /// Nullspace of this layout. PyCuTe's `_nullspace`.
+    ///
+    /// The stride-0 modes, gathered into a layout over the domain: every
+    /// coordinate it produces maps to zero. A layout with no stride-0
+    /// mode has the trivial nullspace `1:0`.
+    ///
+    /// Post-conditions:
+    ///   `self(result(i)) == 0` for every `i` in the domain of `result`.
+    ///
+    /// ```text
+    /// nullspace(Layout((2, 4, 6), (1, 2, 0))) == Layout(6, 8)
+    /// nullspace(Layout((8, 4), (4, 1)))       == Layout(1, 0)
+    /// ```
+    pub fn nullspace(&self) -> Result<Self> {
+        let fstride = self.stride.flatten();
+        let iseq = fstride
+            .leaves()
+            .into_iter()
+            .enumerate()
+            .filter(|(_, d)| d.is_zero())
+            .map(|(i, _)| i)
+            .collect::<Vec<_>>();
+        if iseq.is_empty() {
+            return Ok(Layout::set(ht!(1), HTuple::Leaf(StrideScalar::Int(0))));
+        }
+        let fshape = self.shape.flatten();
+        let pshape = prefix_product(&fshape, &HTuple::Leaf(StrideScalar::Int(1)))?;
+        Ok(Layout::set(
+            fshape.select(&iseq)?.unwrap().clone(),
+            pshape.select(&iseq)?.unwrap().clone(),
+        ))
+    }
+}
+
+/// The `(stride, extent, position)` triples the two inverses sort.
+///
+/// PyCuTe writes `zip(flat_d, flat_s, prefix_product(flat_s))`; the three
+/// arrive already flat, so this is that zip.
+fn collect_modes<'a>(
+    flat_d: &'a Stride,
+    flat_s: &IntTuple,
+    pps: &'a Stride,
+) -> Vec<(&'a StrideScalar, Int, &'a StrideScalar)> {
+    flat_d
+        .leaves()
+        .into_iter()
+        .zip(flat_s.leaves())
+        .zip(pps.leaves())
+        .map(|((de, s), pps)| (de, *s, pps))
+        .collect()
+}
+
+/// The accumulator at the codomain position `de` names, for writing
+/// through. PyCuTe's `proj(result_S, de)`.
+///
+/// Returns [`Error::BadPath`] when the position addresses an interior
+/// node rather than one accumulator — PyCuTe reaches for `.append` on a
+/// tuple there.
+fn proj_leaf_mut<'a, T: Debug>(x: &'a mut HTuple<T>, de: &StrideScalar) -> Result<&'a mut T> {
+    match proj_tuple_mut(x, de)? {
+        HTuple::Leaf(v) => Ok(v),
+        other => Err(Error::BadPath {
+            path: vec![],
+            value: format!("{other:?}"),
+        }),
+    }
+}
+
+/// Turns each accumulated vector into a mode of its own.
+///
+/// PyCuTe's `tuple(result_S)`: its leaves are Python lists, and
+/// `is_tuple` counts a list as a tuple, so the accumulated entries are
+/// already modes by the time the layout is built.
+fn modes_of<T>(acc: HTuple<Vec<T>>) -> HTuple<T> {
+    match acc {
+        HTuple::Leaf(v) => HTuple::Tuple(v.into_iter().map(HTuple::Leaf).collect()),
+        HTuple::Tuple(modes) => HTuple::Tuple(modes.into_iter().map(modes_of).collect()),
+    }
+}
+
+/// A coprofile as a coalesce [`Profile`]. Only the presence of each leaf
+/// is read, so the value carries over untouched.
+fn as_profile(coprof: &IntTuple) -> Profile {
+    coprof.transform_leaf(&|v| Some(*v))
+}

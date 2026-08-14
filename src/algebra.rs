@@ -3,16 +3,16 @@
 //!
 //! PyCuTe's `algebra.py` is a dispatch facade: each function looks for a
 //! private method on its argument and promotes an int or a tuple through
-//! `tiler_to_layout`. Only two of its functions carry an algorithm of
-//! their own, and those two are here — [`layout_add`] and
-//! [`greatest_common_domain`]. The rest of the facade lands with the
-//! methods it dispatches to.
+//! `tiler_to_layout`. Two of its functions carry an algorithm of their
+//! own — [`layout_add`] and [`greatest_common_domain`]; the rest are the
+//! wrappers below, each one [`dispatch`] followed by the [`Layout`]
+//! method of the same name.
 
 use crate::{
     atuple::StrideScalar,
     error::{Error, Result},
     htuple::HTuple,
-    layout::{Layout, Profile},
+    layout::{Layout, OptTiler, Profile, Tiler, TilerLeaf, tiler_to_layout},
     shape::size,
     typedefs::{Int, IntTuple, Stride},
 };
@@ -21,6 +21,149 @@ use crate::{
 /// mode.
 fn every_mode() -> Profile {
     HTuple::Leaf(Some(1))
+}
+
+/// The dispatch head every wrapper below opens with. PyCuTe writes it
+/// out once per function: a value that carries the method goes straight
+/// to it, a `None` answers `None`, and an integer or a tuple is promoted
+/// through [`tiler_to_layout`].
+///
+/// The one type that carries the methods is [`Layout`], so
+/// `hasattr(A, '_coalesce')` is the [`TilerLeaf::Layout`] arm. PyCuTe
+/// closes each head with `raise TypeError(...)` for everything else;
+/// [`OptTiler`] admits nothing else, so that branch has no counterpart
+/// here.
+///
+/// Returns [`Error::BadPath`] for a tuple with an absent mode, which is
+/// where PyCuTe hands a `None` to `tiler_to_layout` and it falls off the
+/// end of its own dispatch.
+fn dispatch(a: &OptTiler) -> Result<Option<Layout>> {
+    match a {
+        HTuple::Leaf(None) => Ok(None),
+        HTuple::Leaf(Some(TilerLeaf::Layout(l))) => Ok(Some(l.clone())),
+        // PyCuTe's `tiler_to_layout(A)`, whose `e` defaults to `1`.
+        _ => tiler_to_layout(&as_tiler(a)?, &StrideScalar::Int(1)).map(Some),
+    }
+}
+
+/// The argument with its per-mode [`Option`]s stripped, so that
+/// [`tiler_to_layout`] can read it.
+///
+/// [`OptTiler`] carries the absent mode that [`Tiler`] does not, and an
+/// absent mode has no layout.
+fn as_tiler(a: &OptTiler) -> Result<Tiler> {
+    match a {
+        HTuple::Leaf(Some(t)) => Ok(HTuple::Leaf(t.clone())),
+        HTuple::Leaf(None) => Err(Error::BadPath {
+            path: vec![],
+            value: format!("{a:?}"),
+        }),
+        HTuple::Tuple(modes) => modes
+            .iter()
+            .map(as_tiler)
+            .collect::<Result<Vec<_>>>()
+            .map(HTuple::Tuple),
+    }
+}
+
+/// Coalesces per `profile`, keeping size-1 modes. PyCuTe's `coalesce_z`.
+///
+/// The facade over [`Layout::coalesce_z`]: it takes the looser argument
+/// [`dispatch`] reads, and answers `None` for an absent one. PyCuTe
+/// defaults `profile` to `1`; Rust has no default argument, so every
+/// caller spells it out as `HTuple::Leaf(Some(1))`.
+///
+/// ```text
+/// coalesce_z(Layout((2, 1, 6, 1), (1, 7, 8, 0))) == Layout((2, 6, 1), (1, 8, 0))
+/// ```
+pub fn coalesce_z(a: &OptTiler, profile: &Profile) -> Result<Option<Layout>> {
+    dispatch(a)?.map(|a| a.coalesce_z(profile)).transpose()
+}
+
+/// Coalesces per `profile`. PyCuTe's `coalesce`.
+///
+/// The facade over [`Layout::coalesce`], which is [`coalesce_z`] plus
+/// the trailing size-1 trim.
+///
+/// ```text
+/// coalesce(Layout((2, (1, 6)), (1, (6, 2))))         == Layout(12, 1)
+/// coalesce(Layout((2, 1, 6, 1), (1, 7, 8, 0)))       == Layout((2, 6), (1, 8))
+/// coalesce(Layout((2, (1, 6)), (1, (6, 2))), (1, 1)) == Layout((2, 6), (1, 2))
+/// ```
+pub fn coalesce(a: &OptTiler, profile: &Profile) -> Result<Option<Layout>> {
+    dispatch(a)?.map(|a| a.coalesce(profile)).transpose()
+}
+
+/// The group composition `a o b`. PyCuTe's `composition`.
+///
+/// The facade over [`Layout::composition`], which already reads every
+/// form of the right-hand side; this adds the same reading of the left
+/// one.
+///
+/// PyCuTe answers an absent `a` with `b` itself, which may be an integer
+/// or a tuple rather than a layout. The return type here is a layout, so
+/// that arm is `b` read through the same [`dispatch`] — `tiler_to_layout(b)`,
+/// which is what a caller would have had to do with PyCuTe's answer.
+///
+/// ```text
+/// composition(Layout((6, 2), (8, 2)), Layout((4, 3), (3, 1))) == Layout(((2, 2), 3), ((24, 2), 8))
+/// composition(Layout(12),             Layout((4, 3)))         == Layout((4, 3), (1, 4))
+/// ```
+pub fn composition(a: &OptTiler, b: &OptTiler) -> Result<Option<Layout>> {
+    match dispatch(a)? {
+        Some(a) => a.composition(b).map(Some),
+        None => dispatch(b),
+    }
+}
+
+/// Largest right inverse. PyCuTe's `right_inverse`.
+///
+/// The facade over [`Layout::right_inverse`].
+///
+/// ```text
+/// right_inverse(Layout((4, 8), (1, 4))) == Layout(32, 1)
+/// right_inverse(Layout((4, 8), (8, 1))) == Layout((8, 4), (4, 1))
+/// ```
+pub fn right_inverse(a: &OptTiler) -> Result<Option<Layout>> {
+    dispatch(a)?.map(|a| a.right_inverse()).transpose()
+}
+
+/// Left inverse. PyCuTe's `left_inverse`.
+///
+/// The facade over [`Layout::left_inverse`].
+///
+/// ```text
+/// left_inverse(Layout((4, 8), (1, 4))) == Layout(32, 1)
+/// left_inverse(Layout((4, 8), (1, 5))) == Layout((5, 8), (1, 4))
+/// ```
+pub fn left_inverse(a: &OptTiler) -> Result<Option<Layout>> {
+    dispatch(a)?.map(|a| a.left_inverse()).transpose()
+}
+
+/// Complement, optionally extended to cover `extend`. PyCuTe's
+/// `complement`.
+///
+/// The facade over [`Layout::complement`]. `extend` is PyCuTe's optional
+/// second argument, so it stays an [`Option`] here too.
+///
+/// ```text
+/// complement(Layout(4, 2))                      == Layout((2, 1), (1, 8))
+/// complement(Layout(4, 2), Layout(20, 1).shape) == Layout((2, 3), (1, 8))
+/// ```
+pub fn complement(a: &OptTiler, extend: Option<&IntTuple>) -> Result<Option<Layout>> {
+    dispatch(a)?.map(|a| a.complement(extend)).transpose()
+}
+
+/// The coordinates that map to zero. PyCuTe's `nullspace`.
+///
+/// The facade over [`Layout::nullspace`].
+///
+/// ```text
+/// nullspace(Layout((4, 5), (0, E(1)))) == Layout(4, 1)
+/// nullspace(Layout((2, 4, 6), (1, 2, 0))) == Layout(6, 8)
+/// ```
+pub fn nullspace(a: &OptTiler) -> Result<Option<Layout>> {
+    dispatch(a)?.map(|a| a.nullspace()).transpose()
 }
 
 /// Adds two layouts coordinate-wise. PyCuTe's `layout_add`.

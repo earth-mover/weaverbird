@@ -39,7 +39,10 @@ pub mod shape;
 pub mod stride;
 pub mod typedefs;
 
-pub use algebra::{greatest_common_domain, layout_add};
+pub use algebra::{
+    coalesce, coalesce_z, complement, composition, greatest_common_domain, layout_add,
+    left_inverse, nullspace, right_inverse,
+};
 pub use atuple::{
     ArithTuple, StrideScalar, basis_repr, e, is_basis, make_basis_like, proj, proj_tuple,
     proj_tuple_mut, unit,

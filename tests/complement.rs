@@ -1,10 +1,5 @@
 //! Ported from `test/test_complement.py`.
 //!
-//! `postcondition_complement_strong` closes with the generalized
-//! inverse conditions, which need `right_inverse`. That is not ported
-//! yet, so the strong cases run the weak post-condition here and the
-//! inverse half waits.
-//!
 //! `test_complement_sympy` is gone: [`Int`](pinstripe::Int) is the only
 //! integer here, so there is no symbolic extent to carry through. Its
 //! substitution twin, `test_complement_sympy_substitution`, is concrete
@@ -15,8 +10,11 @@
 use std::cmp::Ordering;
 
 use pinstripe::{
-    HTuple, Int, IntTuple, Layout, Stride, StrideScalar, atuple::scaled_basis, coprofile, e, ht,
-    htuple::weakly_congruent, size,
+    HTuple, Int, IntTuple, Layout, Stride, StrideScalar,
+    atuple::{as_tuple, scaled_basis},
+    coprofile, e, ht,
+    htuple::weakly_congruent,
+    make_layout, size,
 };
 
 // ---------------------------------------------------------------------------
@@ -43,6 +41,13 @@ fn s(x: StrideScalar) -> Stride {
 /// is more than one token tree.
 fn t(modes: Vec<Stride>) -> Stride {
     HTuple::Tuple(modes)
+}
+
+/// A codomain value read back as a coordinate. PyCuTe feeds `L(i)`
+/// straight into another layout; [`Layout::call`] takes an [`IntTuple`],
+/// so the conversion is spelled out.
+fn crd(x: &StrideScalar) -> IntTuple {
+    as_tuple(x)
 }
 
 /// PyCuTe's `postcondition_complement`.
@@ -83,11 +88,42 @@ fn postcondition_complement(source: &Layout) -> Layout {
     result
 }
 
-/// PyCuTe's `postcondition_complement_strong`, less the generalized
-/// inverse conditions. Those go through `right_inverse`, which is not
-/// ported; until it is, the strong cases carry the weak post-condition.
+/// PyCuTe's `postcondition_complement_strong`.
+///
+/// Beyond the weak post-condition, the source and its complement
+/// together admit a right inverse, and that inverse is a generalized
+/// reflexive inverse of the completed layout.
 fn postcondition_complement_strong(source: &Layout) {
-    postcondition_complement(source);
+    let result = postcondition_complement(source);
+
+    // Generalized inverse conditions.
+    let completed = make_layout(vec![source.clone(), result]);
+    let inverse = completed.right_inverse().unwrap();
+
+    // Right inverse condition.
+    for i in 0..size(&inverse.shape, &[]).unwrap() {
+        let r = inverse.call(&ht!(i)).unwrap();
+        assert_eq!(
+            inverse
+                .call(&crd(&completed.call(&crd(&r)).unwrap()))
+                .unwrap(),
+            r,
+            "right inverse: {completed} => {inverse} at {i}"
+        );
+    }
+
+    // Left inverse condition — the right inverse is a generalized
+    // reflexive inverse.
+    for i in 0..size(&completed.shape, &[]).unwrap() {
+        let c = completed.call(&ht!(i)).unwrap();
+        assert_eq!(
+            completed
+                .call(&crd(&inverse.call(&crd(&c)).unwrap()))
+                .unwrap(),
+            c,
+            "reflexive: {completed} => {inverse} at {i}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +189,13 @@ fn complement_completes_a_coordinate_codomain() {
             s(scaled_basis(7, &[2, 1])),
         ]),
     ));
+    // FAILING. `Layout::right_inverse` rejects the completed layout with
+    // `BadPath { path: [] }`: an integer-0 stride is the rank-0 basis, and
+    // the loop projects the accumulator at its path before the
+    // stride-0 guard skips it. PyCuTe's `proj(x, 0)` is the identity, so
+    // the projection is harmless there and the mode is skipped. The fix
+    // is in `src/layout.rs`, not here — `right_inverse` and
+    // `left_inverse` both project ahead of the guard.
     postcondition_complement_strong(&strided(
         ht!((2, 3, 5)),
         t(vec![

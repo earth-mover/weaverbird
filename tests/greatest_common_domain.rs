@@ -1,13 +1,12 @@
 //! Ported from `test/test_greatest_common_domain.py`.
 //!
-//! Two clauses of the Python post-condition need the rest of the
-//! algebra and so wait for it:
+//! One clause of the Python post-condition needs the rest of the
+//! algebra and so waits for it:
 //!
-//! -- `is_layout(composition(shape(A), R))` for both operands, and
 //! -- `size(greatest_common_domain(logical_divide(shape(A), R)[1],
 //!    logical_divide(shape(B), R)[1])) == 1`.
 //!
-//! `composition` and `logical_divide` are not ported yet.
+//! `logical_divide` is not ported yet.
 //!
 //! PyCuTe reads a shape off any operand, so its cases pass ints,
 //! tuples, and `Layout`s interchangeably. Here the shape is the
@@ -15,7 +14,8 @@
 #![expect(clippy::unwrap_used, reason = "a test asserts the happy path")]
 
 use pinstripe::{
-    Int, IntTuple, Layout, Stride, StrideScalar, depth, greatest_common_domain, ht, size,
+    HTuple, Int, IntTuple, Layout, OptTiler, Stride, StrideScalar, Tiler, TilerLeaf, depth,
+    greatest_common_domain, ht, size, tiler_to_layout,
 };
 
 // ---------------------------------------------------------------------------
@@ -33,6 +33,16 @@ fn layout(shape: IntTuple, stride: IntTuple) -> Layout {
     Layout::new(shape, &as_stride(&stride)).unwrap()
 }
 
+/// A layout as the right-hand side of a composition.
+fn tiler(x: &Layout) -> OptTiler {
+    HTuple::Leaf(Some(TilerLeaf::Layout(x.clone())))
+}
+
+/// The tiler of a plain shape.
+fn int_tiler(shape: &IntTuple) -> Tiler {
+    shape.transform_leaf(&|v: &Int| TilerLeaf::Int(*v))
+}
+
 /// The domain size of a shape.
 fn extent(shape: &IntTuple) -> Int {
     size(shape, &[]).unwrap()
@@ -46,8 +56,8 @@ fn gcd(a: Int, b: Int) -> Int {
     }
 }
 
-/// PyCuTe's `postcondition_greatest_common_domain`, less the two
-/// clauses that need `composition` and `logical_divide`.
+/// PyCuTe's `postcondition_greatest_common_domain`, less the clause
+/// that needs `logical_divide`.
 fn postcondition(a: &IntTuple, b: &IntTuple) -> Layout {
     let result = greatest_common_domain(a, b);
 
@@ -59,6 +69,17 @@ fn postcondition(a: &IntTuple, b: &IntTuple) -> Layout {
     assert_eq!(extent(a) % n, 0, "{result} does not divide {a:?}");
     assert_eq!(extent(b) % n, 0, "{result} does not divide {b:?}");
     assert_eq!(gcd(extent(a), extent(b)) % n, 0, "{result} exceeds the gcd");
+
+    // It divides both operands: each admits a composition with it.
+    for operand in [a, b] {
+        assert!(
+            tiler_to_layout(&int_tiler(operand), &StrideScalar::Int(1))
+                .unwrap()
+                .composition(&tiler(&result))
+                .is_ok(),
+            "{result} does not divide {operand:?}"
+        );
+    }
 
     // Symmetric in the two operands.
     assert_eq!(

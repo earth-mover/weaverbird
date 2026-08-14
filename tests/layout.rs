@@ -1,11 +1,9 @@
 //! Ported from `test/test_layout.py`, `test/test_make_layout.py`, and
 //! `test/test_recast.py`.
 //!
-//! The cases that need the layout algebra — `coalesce`, `composition`,
-//! `complement`, `logical_divide`, `logical_product` — wait for that
-//! module. From `test_make_layout.py` that is
-//! `test_tiler_invariant_under_composition` and
-//! `test_zipped_divide_equals_logical_divide_with_tiler`.
+//! `test_zipped_divide_equals_logical_divide_with_tiler` needs
+//! `zipped_divide` and `logical_divide`, which are not ported yet, so it
+//! waits.
 //!
 //! The `test_sympy` and `test_sympy_substitution` cases are gone for
 //! good: [`Int`] is the only integer here, so there is no symbolic
@@ -20,8 +18,9 @@
 use std::{cmp::Ordering, collections::BTreeSet};
 
 use pinstripe::{
-    HTuple, Int, IntTuple, Layout, Scale, Stride, StrideScalar, Tiler, TilerLeaf, coprofile,
-    coshape, e, ht, make_layout, make_layout_like, make_ordered_layout, recast, tiler_to_layout,
+    HTuple, Int, IntTuple, Layout, OptTiler, Scale, Stride, StrideScalar, Tiler, TilerLeaf,
+    coprofile, coshape, e, ht, make_layout, make_layout_like, make_ordered_layout, recast,
+    tiler_to_layout,
 };
 
 // ---------------------------------------------------------------------------
@@ -81,6 +80,17 @@ fn int_tiler(shape: &IntTuple) -> Tiler {
 /// The default `e` of `tiler_to_layout`.
 fn one() -> StrideScalar {
     StrideScalar::Int(1)
+}
+
+/// The tiler as the right-hand side of a composition, which admits a
+/// per-mode `None` the tiler itself has no leaf for.
+fn opt(tiler: &Tiler) -> OptTiler {
+    tiler.transform_leaf(&|leaf: &TilerLeaf| Some(leaf.clone()))
+}
+
+/// A layout as the right-hand side of a composition.
+fn as_rhs(x: &Layout) -> OptTiler {
+    HTuple::Leaf(Some(TilerLeaf::Layout(x.clone())))
 }
 
 // ---------------------------------------------------------------------------
@@ -375,6 +385,27 @@ fn a_tuple_of_layout_tilers_scales_each_by_its_basis() {
             t(vec![s(e(&[0]).scale(2)), s(e(&[1]).scale(3))])
         )
     );
+}
+
+/// The defining post-condition of `tiler_to_layout`: composing with a
+/// tiler equals composing with the layout it stands for.
+#[test]
+fn a_tiler_composes_as_its_layout_does() {
+    let a = layout(ht!((12, (4, 8))), ht!((59, (13, 1))));
+    let tilers = [
+        int_tiler(&ht!((3, 8))),
+        HTuple::Tuple(vec![
+            HTuple::Leaf(TilerLeaf::Layout(layout(ht!(3), ht!(4)))),
+            HTuple::Leaf(TilerLeaf::Layout(layout(ht!(8), ht!(1)))),
+        ]),
+    ];
+    for tiler in &tilers {
+        assert_eq!(
+            a.composition(&opt(tiler)).unwrap(),
+            a.composition(&as_rhs(&tiler_to_layout(tiler, &one()).unwrap()))
+                .unwrap()
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

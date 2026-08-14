@@ -1,14 +1,13 @@
 //! Ported from `test/test_coalesce.py` and `test/test_coalesce_z.py`.
 //!
-//! The Python post-condition closes with
-//! `composition(L, Layout(size(L), 1)) == R`. Composition is not ported
-//! yet, so that clause waits; everything else is here.
-//!
 //! The `sympy` cases are gone for good: [`Int`] is the only integer
 //! here, so there is no symbolic extent to carry through the fold.
 #![expect(clippy::unwrap_used, reason = "a test asserts the happy path")]
 
-use pinstripe::{HTuple, Int, IntTuple, Layout, Profile, Stride, StrideScalar, depth, e, ht, size};
+use pinstripe::{
+    HTuple, Int, IntTuple, Layout, OptTiler, Profile, Stride, StrideScalar, TilerLeaf, depth, e,
+    ht, size,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -40,6 +39,11 @@ fn t(modes: Vec<Stride>) -> Stride {
     HTuple::Tuple(modes)
 }
 
+/// A layout as the right-hand side of a composition.
+fn tiler(x: &Layout) -> OptTiler {
+    HTuple::Leaf(Some(TilerLeaf::Layout(x.clone())))
+}
+
 /// The profile PyCuTe spells `1` — coalesce every mode.
 fn all() -> Profile {
     HTuple::Leaf(Some(1))
@@ -51,11 +55,12 @@ fn by_mode(modes: Vec<Option<Int>>) -> Profile {
     HTuple::Tuple(modes.into_iter().map(HTuple::Leaf).collect())
 }
 
-/// PyCuTe's `postcondition_coalesce`, less the composition clause.
+/// PyCuTe's `postcondition_coalesce`.
 ///
 /// The result is flat, keeps the domain size, and evaluates as the
 /// source does at every coordinate. Coalescing it again changes
-/// nothing.
+/// nothing, and composing the source with its own flat domain lands on
+/// the same layout.
 fn postcondition_coalesce(source: &Layout, expected: Option<Layout>) {
     let result = source.coalesce(&all()).unwrap();
     if let Some(expected) = expected {
@@ -78,6 +83,14 @@ fn postcondition_coalesce(source: &Layout, expected: Option<Layout>) {
         result.coalesce(&all()).unwrap(),
         result,
         "idempotent: {result}"
+    );
+
+    // Composition-is-coalesced.
+    let flat = layout(ht!(size(&source.shape, &[]).unwrap()), ht!(1));
+    assert_eq!(
+        source.composition(&tiler(&flat)).unwrap(),
+        result,
+        "composed: {source} o {flat} => {result}"
     );
 }
 

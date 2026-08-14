@@ -1,11 +1,17 @@
 //! Ported from `test/test_atuple.py`.
 //!
-//! The cases that need `Layout` or `idx2crd` wait for those modules.
+//! `test_idx2crd_is_consistent_across_constructions` and
+//! `TestWeaklyCongruentImplicitZero` are gone for good: both read an
+//! [`ArithTuple`] as the *index* argument, and this crate types that
+//! argument [`IntTuple`] — `idx2crd` and `weakly_congruent` never see a
+//! stride scalar, so the Python dispatch they exercise has no
+//! counterpart.
 #![expect(clippy::unwrap_used, reason = "a test asserts the happy path")]
 
 use pinstripe::{
-    ArithTuple, HTuple, StrideScalar, atuple::scaled_basis, basis_repr, e, ht, is_basis,
-    make_basis_like, proj, proj_tuple, proj_tuple_mut, unit,
+    ArithTuple, HTuple, Int, IntTuple, Layout, Stride, StrideScalar, atuple::scaled_basis,
+    basis_repr, e, ht, idx2crd, is_basis, make_basis_like, proj, proj_tuple, proj_tuple_mut, size,
+    unit,
 };
 
 /// Builds an [`ArithTuple`] from nested parentheses, so the ported cases
@@ -16,6 +22,35 @@ macro_rules! at {
     };
     ($value:expr) => { StrideScalar::Int($value) };
 }
+
+/// The integer tuple as an arithmetic tuple. PyCuTe's
+/// `ArithTuple(crd)`, which lifts a coordinate into the stride scalars.
+fn arith(t: &IntTuple) -> StrideScalar {
+    match t {
+        HTuple::Leaf(v) => StrideScalar::Int(*v),
+        HTuple::Tuple(modes) => {
+            StrideScalar::Arith(ArithTuple::from_data(modes.iter().map(arith).collect()))
+        }
+    }
+}
+
+/// `Layout(shape, stride)` over an already-built stride.
+fn strided(shape: IntTuple, stride: Stride) -> Layout {
+    Layout::set(shape, stride)
+}
+
+/// A stride leaf.
+fn s(x: StrideScalar) -> Stride {
+    HTuple::Leaf(x)
+}
+
+/// A stride mode.
+fn t(modes: Vec<Stride>) -> Stride {
+    HTuple::Tuple(modes)
+}
+
+/// A layout paired with the coordinate `A(i, j)` it evaluates to.
+type CoordCase = (Layout, fn(Int, Int) -> StrideScalar);
 
 #[test]
 fn addition_is_elementwise() {
@@ -89,6 +124,73 @@ fn scaling_a_basis_scales_its_value() {
         scaled_basis(42, &[1, 0]).scale(2),
         at!((0, (84, 0, 0, 0, 0), 0, 0, 0))
     );
+}
+
+#[test]
+fn the_order_on_coordinates_follows_the_colexicographic_index() {
+    let shape = ht!((4, (5, 6), 2));
+    let crd = |i: Int| arith(&idx2crd(&ht!(i), &shape).unwrap());
+    let extent = size(&shape, &[]).unwrap();
+    for i in 0..extent {
+        assert!(StrideScalar::Int(0) < crd(i + 1));
+        for j in i + 1..extent {
+            assert!(crd(i) < crd(j));
+            assert!(crd(j) > crd(i));
+        }
+    }
+}
+
+#[test]
+fn a_basis_strided_layout_evaluates_to_a_coordinate() {
+    // Each case pairs a layout with the coordinate `A(i, j)` it lands
+    // on, over the two mode extents PyCuTe sweeps.
+    let cases: Vec<CoordCase> = vec![
+        (
+            strided(ht!((5, 4)), t(vec![s(e(&[0])), s(e(&[1]))])),
+            |i, j| at!((i, j)),
+        ),
+        (
+            strided(ht!((5, 4)), t(vec![s(e(&[0])), s(e(&[2]))])),
+            |i, j| at!((i, 0, j)),
+        ),
+        (
+            strided(ht!((5, 4)), t(vec![s(e(&[2])), s(e(&[1]))])),
+            |i, j| at!((0, j, i)),
+        ),
+        (
+            strided(ht!((5, 4)), t(vec![s(e(&[2])), s(StrideScalar::Int(0))])),
+            |i, _| at!((0, 0, i)),
+        ),
+        (
+            strided(ht!((5, 4)), t(vec![s(e(&[2])), s(e(&[1, 3]))])),
+            |i, j| at!((0, (0, 0, 0, j), i)),
+        ),
+        (
+            strided(
+                ht!((4, (4, 2))),
+                t(vec![s(e(&[1])), t(vec![s(e(&[0])), s(e(&[1]).scale(4))])]),
+            ),
+            |i, j| {
+                // `at!` cannot spell an arithmetic leaf, so the two
+                // coordinates are named first.
+                let (row, col) = (j % 4, i + 4 * (j / 4));
+                at!((row, col))
+            },
+        ),
+    ];
+    for (a, expected) in cases {
+        let rows = size(&a.shape, &[0]).unwrap();
+        let cols = size(&a.shape, &[1]).unwrap();
+        for i in 0..rows {
+            for j in 0..cols {
+                assert_eq!(
+                    a.call(&ht!((i, j))).unwrap(),
+                    expected(i, j),
+                    "{a} at ({i},{j})"
+                );
+            }
+        }
+    }
 }
 
 /// The paths `test_sbasis` sweeps.

@@ -1,8 +1,8 @@
 //! Ported from `pycute/stride.py`'s docstring examples.
 //!
 //! `test/test_coalesce_z.py` drives the `Layout`-level `coalesce_z` — it
-//! builds `Layout`s and evaluates them — so it waits for that module.
-//! The stride-level fold is exercised here directly instead.
+//! builds `Layout`s and evaluates them — so it is ported in
+//! `coalesce.rs`. The stride-level fold is exercised here directly.
 #![expect(clippy::unwrap_used, reason = "a test asserts the happy path")]
 
 use pinstripe::{

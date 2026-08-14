@@ -1,8 +1,9 @@
 //! Ported from `test/test_compatibility.py`, plus the worked examples in
 //! the docstrings of `pycute/shape.py`.
 //!
-//! The cases that need `Layout` — `test_accepts_layouts` — wait for that
-//! module.
+//! PyCuTe reads a shape off any operand, so `test_accepts_layouts`
+//! passes `Layout`s where the other cases pass tuples. Here the shape is
+//! the argument, and a layout operand arrives as `&layout.shape`.
 //!
 //! `test/test_typing.py` holds no shape assertions to port: it exercises
 //! Python's ABC registration, `typing.get_type_hints`, and module
@@ -10,11 +11,16 @@
 #![expect(clippy::unwrap_used, reason = "a test asserts the happy path")]
 
 use pinstripe::{
-    HTuple, IntTuple, common_coarsening, common_refinement, compatible, coordinates, crd2idx,
-    depth, ht,
+    HTuple, IntTuple, Layout, StrideScalar, common_coarsening, common_refinement, compatible,
+    coordinates, crd2idx, depth, ht,
     htuple::{congruent, weakly_congruent},
     idx2crd, rank, shape, size,
 };
+
+/// `Layout(shape)` — the compact, column-major default.
+fn compact(shape: IntTuple) -> Layout {
+    Layout::new(shape, &HTuple::Leaf(StrideScalar::Int(1))).unwrap()
+}
 
 // ---------------------------------------------------------------------------
 // congruent — same hierarchical profile
@@ -235,6 +241,24 @@ fn common_refinement_rejects_a_single_bad_mode() {
     assert!(common_refinement(&ht!((4, (3, 5))), &ht!((4, (2, 5)))).is_err());
 }
 
+#[test]
+fn common_refinement_reads_the_shape_off_a_layout() {
+    let l1 = compact(ht!((2, 15)));
+    let l2 = compact(ht!((2, (3, 5))));
+    assert_eq!(
+        common_refinement(&l1.shape, &l2.shape).unwrap(),
+        ht!((2, (3, 5)))
+    );
+    assert_eq!(
+        common_refinement(&l1.shape, &ht!((2, (3, 5)))).unwrap(),
+        ht!((2, (3, 5)))
+    );
+    assert_eq!(
+        common_refinement(&ht!(30), &l1.shape).unwrap(),
+        ht!((2, 15))
+    );
+}
+
 // ---------------------------------------------------------------------------
 // common_coarsening — the meet
 // ---------------------------------------------------------------------------
@@ -305,6 +329,21 @@ fn common_coarsening_rejects_an_int_beside_a_tuple_of_another_size() {
 fn common_coarsening_rejects_a_total_size_mismatch() {
     assert!(common_coarsening(&ht!((2, 3)), &ht!((4, 5))).is_err());
     assert!(common_coarsening(&ht!((2, 3, 4)), &ht!((6, 5))).is_err());
+}
+
+#[test]
+fn common_coarsening_reads_the_shape_off_a_layout() {
+    let l1 = compact(ht!((2, 15)));
+    let l2 = compact(ht!((2, (3, 5))));
+    assert_eq!(
+        common_coarsening(&l1.shape, &l2.shape).unwrap(),
+        ht!((2, 15))
+    );
+    assert_eq!(
+        common_coarsening(&l1.shape, &ht!((2, (3, 5)))).unwrap(),
+        ht!((2, 15))
+    );
+    assert_eq!(common_coarsening(&ht!(30), &l1.shape).unwrap(), ht!(30));
 }
 
 // ---------------------------------------------------------------------------

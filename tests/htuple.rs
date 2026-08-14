@@ -1,17 +1,31 @@
 //! Ported from `test/test_htuple.py`.
 //!
-//! The cases that need `Layout`, `inner_product`, `prefix_product`, or
-//! `idx2crd` wait for those modules.
+//! `test_inner_product` and `test_prefix_product` live in `stride.rs`,
+//! and `test_idx2crd` and `TestModeOpDecorator` in `shape.rs`: this port
+//! follows PyCuTe's module for each function, and those four sit outside
+//! `htuple`. The `Layout` cases are here.
 #![expect(clippy::unwrap_used, reason = "a test asserts the happy path")]
 
 use pinstripe::{
-    HTuple, ht,
+    HTuple, Int, IntTuple, Layout, Stride, StrideScalar, ht,
     htuple::{
         congruent, dice_, fold_leaf, slice_, transform_apply_leaf, transform_apply_leaf2,
         transform_apply_leaf4, weakly_congruent, zip_leaves, zip_transform_leaf,
         zip3_transform_leaf,
     },
+    make_layout,
 };
+
+/// The integer tuple as a stride, so the ported cases read like their
+/// Python source.
+fn as_stride(t: &IntTuple) -> Stride {
+    t.transform_leaf(&|v: &Int| StrideScalar::Int(*v))
+}
+
+/// `Layout(shape, stride)` over integer strides.
+fn layout(shape: IntTuple, stride: IntTuple) -> Layout {
+    Layout::new(shape, &as_stride(&stride)).unwrap()
+}
 
 #[test]
 fn is_tuple_separates_a_node_from_a_leaf() {
@@ -105,6 +119,67 @@ fn take_picks_a_half_open_range() {
 #[test]
 fn take_rejects_a_reversed_range() {
     assert!(ht!((1, 2, 3, 4)).take(3, 1).is_err());
+}
+
+/// PyCuTe's `select[I...](A)` over a layout. It reads one sub-layout
+/// per named mode, which is [`Layout::index`] here — a layout is not an
+/// [`HTuple`], so it has no `select` of its own.
+#[test]
+fn select_over_a_layout_reads_one_sub_layout_per_mode() {
+    let a = layout(ht!((2, 3, 5, 7)), ht!((1, 2, 6, 30)));
+    let select = |modes: &[usize]| {
+        modes
+            .iter()
+            .map(|&i| a.index(i).unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        select(&[1, 3]),
+        vec![layout(ht!(3), ht!(2)), layout(ht!(7), ht!(30))]
+    );
+    assert_eq!(
+        select(&[0, 1, 3]),
+        vec![
+            layout(ht!(2), ht!(1)),
+            layout(ht!(3), ht!(2)),
+            layout(ht!(7), ht!(30)),
+        ]
+    );
+    assert_eq!(select(&[2]), vec![layout(ht!(5), ht!(6))]);
+
+    // `make_layout(select[I...](A))` is the C++-style `cute::select`.
+    assert_eq!(
+        make_layout(select(&[1, 3])),
+        layout(ht!((3, 7)), ht!((2, 30)))
+    );
+    assert_eq!(
+        make_layout(select(&[0, 1, 3])),
+        layout(ht!((2, 3, 7)), ht!((1, 2, 30)))
+    );
+}
+
+/// PyCuTe's `take[begin, end](A)` over a layout: the consecutive modes
+/// of the range.
+#[test]
+fn take_over_a_layout_reads_a_run_of_sub_layouts() {
+    let a = layout(ht!((2, 3, 5, 7)), ht!((1, 2, 6, 30)));
+    let take = |begin, end| {
+        (begin..end)
+            .map(|i| a.index(i).unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        take(1, 3),
+        vec![layout(ht!(3), ht!(2)), layout(ht!(5), ht!(6))]
+    );
+    assert_eq!(
+        take(1, 4),
+        vec![
+            layout(ht!(3), ht!(2)),
+            layout(ht!(5), ht!(6)),
+            layout(ht!(7), ht!(30)),
+        ]
+    );
 }
 
 #[test]

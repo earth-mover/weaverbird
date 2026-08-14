@@ -1,12 +1,7 @@
 //! Ported from `test/test_inverse_right.py` and `test/test_inverse_left.py`.
 //!
 //! Both Python post-conditions evaluate the inverse against its source at
-//! every coordinate, and both are here in full. What is missing are the
-//! *cases* that build their layout with `composition`, which is not
-//! ported yet: the SM70 MMA 8x8x4 A TV and SM80 MMA 16x8 entries of
-//! `test_right_inverse_coord` and `test_left_inverse_coord`, and the
-//! whole of `test_left_inverse_app`, which also wants `make_layout` over
-//! a composition and `coalesce` of one.
+//! every coordinate, and both are here in full.
 //!
 //! The `sympy` cases are gone for good, as they are in the coalesce port:
 //! [`Int`](pinstripe::Int) is the only integer here, so
@@ -17,8 +12,9 @@
 #![expect(clippy::unwrap_used, reason = "a test asserts the happy path")]
 
 use pinstripe::{
-    HTuple, Int, IntTuple, Layout, Stride, StrideScalar, atuple::as_tuple, coprofile, e, ht,
-    htuple::weakly_congruent, size,
+    HTuple, Int, IntTuple, Layout, OptTiler, Stride, StrideScalar, Tiler, TilerLeaf,
+    atuple::as_tuple, coprofile, e, ht, htuple::weakly_congruent, make_layout, size,
+    tiler_to_layout,
 };
 
 // ---------------------------------------------------------------------------
@@ -59,6 +55,30 @@ fn t(modes: Vec<Stride>) -> Stride {
 /// conversion is spelled out.
 fn crd(x: &StrideScalar) -> IntTuple {
     as_tuple(x)
+}
+
+/// A layout as the right-hand side of a composition.
+fn tiler(x: &Layout) -> OptTiler {
+    HTuple::Leaf(Some(TilerLeaf::Layout(x.clone())))
+}
+
+/// The tiler of a plain shape.
+fn int_tiler(shape: &IntTuple) -> Tiler {
+    shape.transform_leaf(&|v: &Int| TilerLeaf::Int(*v))
+}
+
+/// The default `e` of [`tiler_to_layout`].
+fn one() -> StrideScalar {
+    StrideScalar::Int(1)
+}
+
+/// `composition(tiler_to_layout(shape), inner)`, the shape PyCuTe's MMA
+/// TV cases are built in.
+fn tv(shape: IntTuple, inner: &Layout) -> Layout {
+    tiler_to_layout(&int_tiler(&shape), &one())
+        .unwrap()
+        .composition(&tiler(inner))
+        .unwrap()
 }
 
 /// The SM70 MMA 8x8x4 C TV layout, over the two trailing coefficients
@@ -183,6 +203,13 @@ fn right_inverse_inverts_over_basis_strides() {
         sm70_c_tv(4, 4),
         sm70_c_tv(5, 5),
         sm70_c_tv(5, 4),
+        // SM70 MMA 8x8x4 A TV inverse.
+        tv(ht!((8, 4)), &layout(ht!(((4, 2), 4)), ht!(((8, 4), 1)))),
+        // SM80 MMA 16x8 TV inverse.
+        tv(
+            ht!((16, 8)),
+            &layout(ht!(((4, 8), (2, 2))), ht!(((32, 1), (16, 8)))),
+        ),
     ] {
         postcondition_right_inverse(&source);
     }
@@ -309,9 +336,43 @@ fn left_inverse_inverts_over_basis_strides() {
         sm70_c_tv(4, 4),
         sm70_c_tv(6, 6),
         sm70_c_tv(6, 4),
+        // SM70 MMA 8x8x4 A TV inverse.
+        tv(ht!((8, 4)), &layout(ht!(((4, 2), 4)), ht!(((8, 4), 1)))),
+        // SM80 MMA 16x8 TV inverse.
+        tv(
+            ht!((16, 8)),
+            &layout(ht!(((4, 8), (2, 2))), ht!(((32, 1), (16, 8)))),
+        ),
     ] {
         postcondition_left_inverse(&source);
     }
+}
+
+/// PyCuTe's `test_left_inverse_app`: a common cotiling failure.
+///
+/// The data layout's inverse takes an address back to a data coordinate,
+/// so composing it with the atom's (tid, vid) layout gives (tid, vid) ->
+/// data coordinate. Mapping that back through the data layout has to
+/// return the atom: `D o (Di o TV) == TV`.
+#[test]
+fn left_inverse_recovers_a_tv_layout_through_its_data_layout() {
+    let atom_tv = layout(ht!(((32, 4), (16, 32))), ht!(((0, 2097152), (1, 65536))));
+    let data = layout(ht!((128, 16)), ht!((65536, 1)));
+
+    // data addr -> data coord. The appended `1:0` gives the
+    // off-the-ends the stride-0.
+    let inv_data = make_layout(vec![data.left_inverse().unwrap(), layout(ht!(1), ht!(0))]);
+    // (tid, vid) -> data coord.
+    let tv_data = inv_data.composition(&tiler(&atom_tv)).unwrap();
+
+    let all = HTuple::Leaf(Some(1));
+    assert_eq!(
+        data.composition(&tiler(&tv_data))
+            .unwrap()
+            .coalesce(&all)
+            .unwrap(),
+        atom_tv.coalesce(&all).unwrap()
+    );
 }
 
 #[test]

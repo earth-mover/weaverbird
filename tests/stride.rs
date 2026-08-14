@@ -6,7 +6,7 @@
 #![expect(clippy::unwrap_used, reason = "a test asserts the happy path")]
 
 use pinstripe::{
-    HTuple, Int, IntTuple, Stride, StrideScalar, coprofile, coshape, e, ht, inner_product,
+    HTuple, Int, IntTuple, Stride, StrideScalar, coprofile, coshape, e, ht, idx2crd, inner_product,
     prefix_product, stride,
     stride::{Coshape, coalesce_z},
 };
@@ -199,29 +199,9 @@ fn coalesce_z_preserves_the_layout_map() {
         assert_eq!(folded_s.product(), s.product());
         for i in 0..s.product() {
             let at = |shape: &IntTuple, stride: &Stride| {
-                inner_product(&idx2crd(i, shape), stride).unwrap()
+                inner_product(&idx2crd(&HTuple::Leaf(i), shape).unwrap(), stride).unwrap()
             };
             assert_eq!(at(&folded_s, &folded_d), at(&s, &d));
         }
     }
-}
-
-/// The colexicographic decomposition of `idx` over `shape`.
-///
-// TODO(merge): replaced by crate::shape at merge time
-/// A stand-in for `shape.py`'s `idx2crd`, which is being ported
-/// elsewhere.
-fn idx2crd(idx: Int, shape: &IntTuple) -> IntTuple {
-    let mut rest = idx;
-    let mut crds = shape
-        .leaves()
-        .into_iter()
-        .map(|&s| {
-            let crd = rest % s;
-            rest /= s;
-            crd
-        })
-        .collect::<Vec<_>>()
-        .into_iter();
-    HTuple::unflatten(&mut crds, shape).unwrap()
 }

@@ -21,14 +21,15 @@
 //! trims those trailing zeros. Equal values hash alike.
 
 use std::{
-    fmt::{self, Debug},
+    cmp::Ordering,
+    fmt::{self, Debug, Display},
     hash::{Hash, Hasher},
 };
 
 use crate::{
     error::{Error, Result},
     htuple::HTuple,
-    typedefs::Int,
+    typedefs::{Int, IntTuple},
 };
 
 // ---------------------------------------------------------------------------
@@ -113,6 +114,25 @@ impl StrideScalar {
         }
     }
 
+    /// This element as a plain hierarchical tuple of integers.
+    ///
+    /// A basis stride sends a coordinate to a coordinate, and this reads
+    /// that coordinate back out.
+    pub fn to_tuple(&self) -> IntTuple {
+        match self {
+            StrideScalar::Int(v) => HTuple::Leaf(*v),
+            StrideScalar::Arith(a) => a.data().iter().map(StrideScalar::to_tuple).collect(),
+        }
+    }
+
+    /// The integer value, for an element of rank zero.
+    pub fn as_int(&self) -> Option<Int> {
+        match self {
+            StrideScalar::Int(v) => Some(*v),
+            StrideScalar::Arith(_) => None,
+        }
+    }
+
     /// The elementwise sum.
     ///
     /// Adding a non-zero integer to an [`ArithTuple`] returns
@@ -130,10 +150,7 @@ impl StrideScalar {
                     .collect::<Result<Vec<_>>>()
                     .map(|data| StrideScalar::Arith(ArithTuple::from_data(data)))
             }
-            _ => Err(Error::Incompatible {
-                lhs: format!("{self:?}"),
-                rhs: format!("{other:?}"),
-            }),
+            _ => Err(Error::Incompatible { lhs: self.clone(), rhs: other.clone() }),
         }
     }
 
@@ -150,10 +167,7 @@ impl StrideScalar {
     /// The sub-element at `path`. An empty path returns the whole
     /// element.
     pub fn get(&self, path: &[usize]) -> Result<&StrideScalar> {
-        let bad_path = || Error::BadPath {
-            path: path.to_vec(),
-            value: format!("{self:?}"),
-        };
+        let bad_path = || Error::BadPath { path: path.to_vec(), value: format!("{self}") };
         match (path.split_first(), self) {
             (None, _) => Ok(self),
             (Some((&i, rest)), StrideScalar::Arith(a)) => {
@@ -221,29 +235,38 @@ impl Hash for ArithTuple {
     }
 }
 
-/// Colexicographic order: the highest position decides.
-///
-/// The order is partial. Comparing a non-zero integer with a tuple
-/// returns `None`, because the two sit at different ranks. PyCuTe raises
-/// there.
-impl PartialOrd for StrideScalar {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        match (colex_lt(self, other), colex_lt(other, self)) {
-            (Ok(true), _) => Some(std::cmp::Ordering::Less),
-            (_, Ok(true)) => Some(std::cmp::Ordering::Greater),
-            (Ok(false), Ok(false)) => Some(std::cmp::Ordering::Equal),
-            _ => None,
+impl StrideScalar {
+    /// Colexicographic order: the highest position decides.
+    ///
+    /// The order is partial. A non-zero integer and a tuple sit at
+    /// different ranks, so they do not compare and this returns
+    /// [`Error::Incompatible`].
+    pub fn try_cmp(&self, other: &Self) -> Result<Ordering> {
+        match (colex_lt(self, other)?, colex_lt(other, self)?) {
+            (true, _) => Ok(Ordering::Less),
+            (_, true) => Ok(Ordering::Greater),
+            (false, false) => Ok(Ordering::Equal),
         }
     }
+
+    /// Colexicographic order for a sort, with incomparable elements
+    /// reported equal.
+    ///
+    /// The crate sorts modes by stride, and a stable sort then holds an
+    /// incomparable pair in its input order. Use [`Self::try_cmp`] where
+    /// the answer must be an order.
+    pub fn sort_cmp(&self, other: &Self) -> Ordering {
+        self.try_cmp(other).unwrap_or(Ordering::Equal)
+    }
 }
+
+// The type carries no `PartialOrd`. The order is partial, and `<` would
+// hide the pairs that do not compare.
 
 /// Strict colex order. Walks both elements from the highest position
 /// down. Returns [`Error::Incompatible`] on a rank mismatch.
 fn colex_lt(a: &StrideScalar, b: &StrideScalar) -> Result<bool> {
-    let incompatible = || Error::Incompatible {
-        lhs: format!("{a:?}"),
-        rhs: format!("{b:?}"),
-    };
+    let incompatible = || Error::Incompatible { lhs: a.clone(), rhs: b.clone() };
     match (a, b) {
         (StrideScalar::Int(x), StrideScalar::Int(y)) => Ok(x < y),
         (StrideScalar::Int(v), _) | (_, StrideScalar::Int(v)) if *v != 0 => Err(incompatible()),
@@ -274,12 +297,11 @@ fn colex_lt(a: &StrideScalar, b: &StrideScalar) -> Result<bool> {
 // Display
 // ---------------------------------------------------------------------------
 
-/// Prints a single scaled basis vector as `value@p_n@…@p_0`, and
-/// anything else as a tuple. PyCuTe's `__str__`.
-impl Debug for StrideScalar {
+/// CuTe notation: a single scaled basis vector prints as
+/// `value@p_n@…@p_0`, and anything else as a tuple.
+impl Display for StrideScalar {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let rep = basis_repr(self);
-        match (rep.as_slice(), self) {
+        match (basis_repr(self).as_slice(), self) {
             ([(value, path)], _) => {
                 write!(f, "{value}")?;
                 path.iter().rev().try_for_each(|p| write!(f, "@{p}"))
@@ -290,7 +312,7 @@ impl Debug for StrideScalar {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    Debug::fmt(c, f)?;
+                    Display::fmt(c, f)?;
                 }
                 write!(f, ")")
             }
@@ -299,9 +321,23 @@ impl Debug for StrideScalar {
     }
 }
 
+/// The same notation as [`Display`], so a stride reads alike in a
+/// message and in a dump.
+impl Debug for StrideScalar {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Display::fmt(self, f)
+    }
+}
+
+impl Display for ArithTuple {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Display::fmt(&StrideScalar::Arith(self.clone()), f)
+    }
+}
+
 impl Debug for ArithTuple {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Debug::fmt(&StrideScalar::Arith(self.clone()), f)
+        Display::fmt(self, f)
     }
 }
 
@@ -346,7 +382,7 @@ macro_rules! e {
 ///
 /// Each entry is one non-zero leaf with its path. An all-zero element
 /// decomposes to the single rank-zero term `(0, [])`.
-pub fn basis_repr(x: &StrideScalar) -> Vec<(Int, Vec<usize>)> {
+pub(crate) fn basis_repr(x: &StrideScalar) -> Vec<(Int, Vec<usize>)> {
     fn walk(x: &StrideScalar, prefix: &[usize], out: &mut Vec<(Int, Vec<usize>)>) {
         match x {
             StrideScalar::Arith(a) => a.data().iter().enumerate().for_each(|(i, c)| {
@@ -368,7 +404,8 @@ pub fn basis_repr(x: &StrideScalar) -> Vec<(Int, Vec<usize>)> {
 
 /// True when `x` is a single scaled basis vector. Every integer counts,
 /// including zero.
-pub fn is_basis(x: &StrideScalar) -> bool {
+#[cfg(test)]
+pub(crate) fn is_basis(x: &StrideScalar) -> bool {
     basis_repr(x).len() == 1
 }
 
@@ -378,9 +415,7 @@ pub fn is_basis(x: &StrideScalar) -> bool {
 fn basis_path(profile: &StrideScalar) -> Result<Vec<usize>> {
     match basis_repr(profile).as_slice() {
         [(_, path)] => Ok(path.clone()),
-        _ => Err(Error::NotBasis {
-            value: format!("{profile:?}"),
-        }),
+        _ => Err(Error::NotBasis { value: profile.clone() }),
     }
 }
 
@@ -389,7 +424,7 @@ fn basis_path(profile: &StrideScalar) -> Result<Vec<usize>> {
 /// `profile` must be a single scaled basis vector — typically a stride
 /// leaf, which already is one. An integer profile names the empty path,
 /// so it returns `x` unchanged.
-pub fn proj<'a>(x: &'a StrideScalar, profile: &StrideScalar) -> Result<&'a StrideScalar> {
+pub(crate) fn proj<'a>(x: &'a StrideScalar, profile: &StrideScalar) -> Result<&'a StrideScalar> {
     x.get(&basis_path(profile)?)
 }
 
@@ -400,34 +435,30 @@ pub fn proj<'a>(x: &'a StrideScalar, profile: &StrideScalar) -> Result<&'a Strid
 /// walks any value.
 ///
 /// Returns [`Error::BadPath`] when the path runs off `x`.
-pub fn proj_tuple<'a, T>(x: &'a HTuple<T>, profile: &StrideScalar) -> Result<&'a HTuple<T>>
+#[cfg(test)]
+pub(crate) fn proj_tuple<'a, T>(x: &'a HTuple<T>, profile: &StrideScalar) -> Result<&'a HTuple<T>>
 where
     T: Debug,
 {
     let path = basis_path(profile)?;
-    x.get(&path).ok_or_else(|| Error::BadPath {
-        path,
-        value: format!("{x:?}"),
-    })
+    x.get(&path).ok_or_else(|| Error::BadPath { path, value: format!("{x:?}") })
 }
 
 /// The part of a hierarchical tuple at the position `profile` names,
 /// for writing through. The mutable twin of [`proj_tuple`].
-pub fn proj_tuple_mut<'a, T>(
+pub(crate) fn proj_tuple_mut<'a, T>(
     x: &'a mut HTuple<T>,
     profile: &StrideScalar,
 ) -> Result<&'a mut HTuple<T>>
 where
     T: Debug,
 {
-    let path = basis_path(profile)?;
-    let value = format!("{x:?}");
-    x.get_mut(&path).ok_or(Error::BadPath { path, value })
+    x.try_get_mut(&basis_path(profile)?)
 }
 
 /// The unit basis element at `profile`'s path. Ignores `profile`'s
 /// coefficient.
-pub fn unit(profile: &StrideScalar) -> Result<StrideScalar> {
+pub(crate) fn unit(profile: &StrideScalar) -> Result<StrideScalar> {
     basis_path(profile).map(|path| e(&path))
 }
 
@@ -435,7 +466,7 @@ pub fn unit(profile: &StrideScalar) -> Result<StrideScalar> {
 /// at its own position. PyCuTe's `make_basis_like`.
 ///
 /// This is the stride of an identity tensor.
-pub fn make_basis_like<T>(profile: &HTuple<T>) -> HTuple<StrideScalar> {
+pub(crate) fn make_basis_like<T>(profile: &HTuple<T>) -> HTuple<StrideScalar> {
     fn walk<T>(profile: &HTuple<T>, prefix: &[usize]) -> HTuple<StrideScalar> {
         match profile {
             HTuple::Leaf(_) => HTuple::Leaf(e(prefix)),
@@ -455,10 +486,6 @@ pub fn make_basis_like<T>(profile: &HTuple<T>) -> HTuple<StrideScalar> {
     walk(profile, &[])
 }
 
-/// Materializes an element as a plain hierarchical tuple of integers.
-pub fn as_tuple(x: &StrideScalar) -> HTuple<Int> {
-    match x {
-        StrideScalar::Int(v) => HTuple::Leaf(*v),
-        StrideScalar::Arith(a) => HTuple::Tuple(a.data().iter().map(as_tuple).collect()),
-    }
-}
+#[cfg(test)]
+#[path = "tests/atuple.rs"]
+mod tests;

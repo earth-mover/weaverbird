@@ -1,284 +1,293 @@
-//! Functions for CuTe shapes. Mirrors `pycute/shape.py`.
+//! Shapes: the integer half of a layout.
 //!
-//! A shape is an [`IntTuple`] of extents. PyCuTe reads a shape off any
-//! object that carries one, and falls back to the object itself; Rust
-//! has no such duck typing, so these functions take the [`IntTuple`]. A
-//! caller with a [`Layout`](crate::Layout) passes its `shape` field.
-//!
-//! PyCuTe's `@ModeOpDecorator` gives each accessor an optional mode
-//! path, so that `size[1](x)` reads mode 1. Here that is an explicit
-//! `mode: &[usize]` argument, spelled the way [`HTuple::get`] spells it.
-//!
+//! A shape is an [`IntTuple`] of extents. Every function here is a method
+//! on that tuple, so a caller holding a [`Layout`](crate::Layout) reads
+//! `layout.shape`, and a caller wanting one mode reads
+//! `layout.shape.get(mode)`.
+
 use crate::{
     atuple::StrideScalar,
     error::{Error, Result},
-    htuple::{HTuple, transform_apply_leaf},
-    stride::{inner_product, prefix_product},
-    typedefs::{Int, IntTuple, Stride},
+    htuple::HTuple,
+    typedefs::{Int, IntTuple},
 };
 
-/// An object's shape. PyCuTe's `shape`.
-///
-/// An [`IntTuple`] is its own shape, so this is the mode projection
-/// alone.
-///
-/// Returns [`Error::BadPath`] when `mode` does not address `obj`.
-pub fn shape<'a>(obj: &'a IntTuple, mode: &[usize]) -> Result<&'a IntTuple> {
-    obj.get(mode).ok_or_else(|| Error::BadPath {
-        path: mode.to_vec(),
-        value: format!("{obj:?}"),
-    })
-}
+impl IntTuple {
+    /// The size of the domain: the product of every extent.
+    pub fn size(&self) -> Int {
+        self.leaves().product()
+    }
 
-/// An object's size: the product of its extents. PyCuTe's `size`.
-pub fn size(obj: &IntTuple, mode: &[usize]) -> Result<Int> {
-    shape(obj, mode).map(HTuple::product)
-}
+    /// The size of each top-level mode, keeping the rank.
+    pub fn size_each(&self) -> IntTuple {
+        match self {
+            HTuple::Leaf(v) => HTuple::Leaf(*v),
+            HTuple::Tuple(modes) => modes.iter().map(|m| HTuple::Leaf(m.size())).collect(),
+        }
+    }
 
-/// An object's rank: its top-level element count. A leaf has rank one.
-/// PyCuTe's `rank`.
-pub fn rank(obj: &IntTuple, mode: &[usize]) -> Result<usize> {
-    shape(obj, mode).map(HTuple::rank)
-}
-
-/// An object's depth: the longest path from the root to a leaf. A leaf
-/// has depth zero. PyCuTe's `depth`.
-///
-/// PyCuTe raises on an empty tuple, whose `reduce(max, ())` has no
-/// seed. Here an empty tuple has depth one.
-pub fn depth(obj: &IntTuple, mode: &[usize]) -> Result<usize> {
-    fn walk(s: &IntTuple) -> usize {
-        match s {
+    /// The longest path from the root to a leaf. A leaf has depth zero,
+    /// and an empty tuple has depth one.
+    pub fn depth(&self) -> usize {
+        match self {
             HTuple::Leaf(_) => 0,
-            HTuple::Tuple(modes) => 1 + modes.iter().map(walk).max().unwrap_or(0),
+            HTuple::Tuple(modes) => 1 + modes.iter().map(IntTuple::depth).max().unwrap_or(0),
         }
     }
-    shape(obj, mode).map(walk)
-}
 
-/// True when `a` *coarsens* `b`. PyCuTe's `compatible`.
-///
-/// Compatibility, `a ≼ b`, is a partial order on shapes. It strengthens
-/// weak congruence by also requiring the sizes to agree. Equivalently,
-/// every coordinate of `a` is a coordinate of `b`.
-///
-/// ```text
-/// compatible(30, (2, 15))              == true
-/// compatible((2, 15), (2, (3, 5)))     == true
-/// compatible(24, 32)                   == false   // size mismatch
-/// compatible((2, (3, 5)), ((3, 2), 5)) == false   // same size, still incompatible
-/// compatible(24, (24,))                == true    // int ≼ (int,)
-/// compatible((24,), 24)                == false   // but not the reverse
-/// ```
-pub fn compatible(a: &IntTuple, b: &IntTuple) -> bool {
-    match (a, b) {
-        (HTuple::Tuple(x), HTuple::Tuple(y)) => {
-            x.len() == y.len() && x.iter().zip(y).all(|(i, j)| compatible(i, j))
-        }
-        (HTuple::Leaf(v), _) => *v == b.product(),
-        (HTuple::Tuple(_), HTuple::Leaf(_)) => false,
+    /// A tuple that holds `value` at `path` and zero everywhere else.
+    ///
+    /// The inverse of [`HTuple::get`]: `lift(x, p).get(p) == x`.
+    pub fn lift(value: Int, path: &[usize]) -> IntTuple {
+        path.iter().rev().fold(HTuple::Leaf(value), |acc, &i| {
+            let mut modes = vec![HTuple::Leaf(0); i];
+            modes.push(acc);
+            HTuple::Tuple(modes)
+        })
     }
-}
 
-/// The minimal shape that *refines* both `a` and `b` — their join under
-/// the compatibility order. PyCuTe's `common_refinement`.
-///
-/// ```text
-/// common_refinement(30, (2, 15))               == (2, 15)
-/// common_refinement(10, (10,))                 == (10,)
-/// common_refinement(((2, 3), 20), (6, (4, 5))) == ((2, 3), (4, 5))
-/// ```
-///
-/// Returns [`Error::NoRefinement`] when no such shape exists.
-pub fn common_refinement(a: &IntTuple, b: &IntTuple) -> Result<IntTuple> {
-    let no_refinement = || Error::NoRefinement {
-        lhs: format!("{a:?}"),
-        rhs: format!("{b:?}"),
-    };
-    match (a, b) {
-        (HTuple::Tuple(x), HTuple::Tuple(y)) if x.len() == y.len() => x
-            .iter()
-            .zip(y)
-            .map(|(ai, bi)| common_refinement(ai, bi))
-            .collect::<Result<Vec<_>>>()
-            .map(HTuple::Tuple),
-        (HTuple::Leaf(x), HTuple::Leaf(y)) if x == y => Ok(a.clone()),
-        (HTuple::Leaf(x), HTuple::Tuple(_)) if *x == b.product() => Ok(b.clone()),
-        (HTuple::Tuple(_), HTuple::Leaf(y)) if a.product() == *y => Ok(a.clone()),
-        _ => Err(no_refinement()),
-    }
-}
-
-/// The maximal shape that *coarsens* both `a` and `b` — their meet
-/// under the compatibility order. PyCuTe's `common_coarsening`.
-///
-/// A meet exists exactly when the two sizes agree; in the worst case it
-/// is the integer size itself.
-///
-/// ```text
-/// common_coarsening((2, 15), (2, (3, 5)))      == (2, 15)
-/// common_coarsening((4, (3, 5)), ((2, 2), 15)) == (4, 15)
-/// common_coarsening((6, 5), (2, 15))           == 30   // mode 0 mismatch -> int
-/// common_coarsening((2, 3), (2, 3, 1))         == 6    // rank mismatch -> int
-/// ```
-///
-/// Returns [`Error::NoCoarsening`] when the sizes differ.
-pub fn common_coarsening(a: &IntTuple, b: &IntTuple) -> Result<IntTuple> {
-    // A per-mode meet, when both sides are tuples of the same rank and
-    // every mode meets. PyCuTe swallows the `ValueError` and falls
-    // through to the integer meet below.
-    let per_mode = match (a, b) {
-        (HTuple::Tuple(x), HTuple::Tuple(y)) if x.len() == y.len() => x
-            .iter()
-            .zip(y)
-            .map(|(ai, bi)| common_coarsening(ai, bi))
-            .collect::<Result<Vec<_>>>()
-            .map(HTuple::Tuple)
-            .ok(),
-        _ => None,
-    };
-    match (per_mode, a.product(), b.product()) {
-        (Some(c), _, _) => Ok(c),
-        (None, sa, sb) if sa == sb => Ok(HTuple::Leaf(sa)),
-        _ => Err(Error::NoCoarsening {
-            lhs: format!("{a:?}"),
-            rhs: format!("{b:?}"),
-        }),
-    }
-}
-
-/// Maps any coordinate to a *natural* coordinate of `shape`. PyCuTe's
-/// `idx2crd`.
-///
-/// The decomposition is colexicographic, so the leftmost mode varies
-/// fastest. The final mode skips its `mod` and keeps the whole
-/// quotient. An out-of-bounds index therefore does not wrap; the excess
-/// accumulates in the last leaf.
-///
-/// ```text
-/// idx2crd(7,  14)          == 7
-/// idx2crd(7,  (3, 2, 4))   == (1, 0, 1)
-/// idx2crd(7,  (3, (2, 4))) == (1, (0, 1))
-/// idx2crd(42, (3, 7, 2))   == (0, 0, 2)   // the last leaf absorbs the excess
-/// ```
-///
-/// PyCuTe also accepts `None`, and answers zeros shaped like `shape`.
-/// An [`IntTuple`] carries no `None`, so that case is absent; a caller
-/// that wants it writes `HTuple::repeat_like(&0, shape)`.
-///
-/// Returns [`Error::BadCoord`] when `idx` does not index `shape`.
-pub fn idx2crd(idx: &IntTuple, shape: &IntTuple) -> Result<IntTuple> {
-    let bad_coord = || Error::BadCoord {
-        idx: format!("{idx:?}"),
-        shape: format!("{shape:?}"),
-    };
-    match (idx, shape) {
-        (HTuple::Leaf(i), HTuple::Leaf(_)) => Ok(HTuple::Leaf(*i)),
-        (HTuple::Tuple(is), HTuple::Tuple(ss)) if is.len() == ss.len() => is
-            .iter()
-            .zip(ss)
-            .map(|(i, s)| idx2crd(i, s))
-            .collect::<Result<Vec<_>>>()
-            .map(HTuple::Tuple),
-        (HTuple::Leaf(i), HTuple::Tuple(_)) => {
-            let extents = shape.leaves();
-            // Every extent but the last takes a `divmod`; the last one
-            // keeps the quotient whole.
-            let head = extents.split_last().map_or(&[][..], |(_, head)| head);
-            let mut quotient = *i;
-            let mut digits = head
-                .iter()
-                .map(|&&s| {
-                    let remainder = quotient.rem_euclid(s);
-                    quotient = quotient.div_euclid(s);
-                    remainder
-                })
-                .collect::<Vec<_>>();
-            digits.push(quotient);
-            HTuple::unflatten(&mut digits.into_iter(), shape).ok_or_else(bad_coord)
-        }
-        _ => Err(bad_coord()),
-    }
-}
-
-/// Maps any coordinate of `shape` to an integral coordinate. PyCuTe's
-/// `crd2idx`.
-///
-/// The recomposition is colexicographic, so the leftmost mode varies
-/// fastest. It is the inverse of [`idx2crd`] on in-bounds input.
-///
-/// ```text
-/// crd2idx((1, 0, 1),   (3, 2, 4))   == 7
-/// crd2idx((1, (0, 1)), (3, (2, 4))) == 7
-/// crd2idx(7,           (3, (2, 4))) == 7   // integral, passes through
-/// crd2idx((2, 5),      (3, (2, 3))) == 17  // flat coord, nested shape
-/// ```
-///
-/// `crd` need only weakly coarsen `shape`: a leaf of `crd` may stand for
-/// a whole sub-tree of `shape`, and that sub-tree contributes its
-/// [`size`]. That is what admits the flat coordinate above.
-///
-/// PyCuTe types the result `Integer`. Here it is a [`StrideScalar`],
-/// which is what [`inner_product`] returns; the strides are the plain
-/// integers of a [`prefix_product`], so the value is always the
-/// [`StrideScalar::Int`] case.
-///
-/// Returns [`Error::BadCoord`] when `crd` does not coarsen `shape`.
-pub fn crd2idx(crd: &IntTuple, shape: &IntTuple) -> Result<StrideScalar> {
-    let bad_coord = || Error::BadCoord {
-        idx: format!("{crd:?}"),
-        shape: format!("{shape:?}"),
-    };
-    // One extent per leaf of `crd`: the size of the sub-shape that leaf
-    // stands for. PyCuTe writes it `transform_leaf(lambda c,s: size(s))`.
-    let extents = transform_apply_leaf(
-        &HTuple::Tuple,
-        &|_: Option<&IntTuple>, sub: Option<&IntTuple>| {
-            sub.ok_or_else(bad_coord)
-                .and_then(|s| size(s, &[]))
-                .map(HTuple::Leaf)
-        },
-        Some(crd),
-        Some(shape),
-    )?;
-    inner_product(crd, &prefix_product(&extents, &Stride::Leaf(1.into()))?)
-}
-
-/// Every natural coordinate of `shape`, in colexicographical order.
-/// PyCuTe's `coordinates`.
-///
-/// ```text
-/// coordinates(6)          == [0, 1, 2, 3, 4, 5]
-/// coordinates((3, 2))     == [(0,0), (1,0), (2,0), (0,1), (1,1), (2,1)]
-/// ```
-///
-/// PyCuTe's generator raises a `TypeError` once it runs dry — the
-/// `raise` at the end of the function body sits after the `yield`s.
-/// This one just ends.
-pub fn coordinates(shape: &IntTuple) -> Vec<IntTuple> {
-    match shape {
-        HTuple::Leaf(n) => (0..*n).map(HTuple::Leaf).collect(),
-        HTuple::Tuple(modes) => match modes.split_first() {
-            None => vec![HTuple::Tuple(vec![])],
-            Some((first, rest)) => {
-                let heads = coordinates(first);
-                coordinates(&HTuple::Tuple(rest.to_vec()))
-                    .into_iter()
-                    .flat_map(|tail| {
-                        let tail_modes = match tail {
-                            HTuple::Tuple(m) => m,
-                            leaf => vec![leaf],
-                        };
-                        heads.iter().map(move |head| {
-                            HTuple::Tuple(
-                                std::iter::once(head.clone())
-                                    .chain(tail_modes.iter().cloned())
-                                    .collect(),
-                            )
-                        })
-                    })
-                    .collect()
+    /// True when `self` *coarsens* `other`.
+    ///
+    /// Compatibility, `a ≼ b`, is a partial order on shapes. It
+    /// strengthens weak congruence by also requiring the sizes to agree.
+    /// Every coordinate of `a` is then a coordinate of `b`.
+    ///
+    /// ```
+    /// # use weaverbird::ht;
+    /// assert!(ht!(30).compatible_with(&ht!((2, 15))));
+    /// assert!(ht!((2, 15)).compatible_with(&ht!((2, (3, 5)))));
+    /// assert!(!ht!(24).compatible_with(&ht!(32)));               // size mismatch
+    /// assert!(!ht!((2, (3, 5))).compatible_with(&ht!(((3, 2), 5))));
+    /// assert!(ht!(24).compatible_with(&ht!((24,))));             // int ≼ (int,)
+    /// assert!(!ht!((24,)).compatible_with(&ht!(24)));            // not the reverse
+    /// ```
+    pub fn compatible_with(&self, other: &IntTuple) -> bool {
+        match (self, other) {
+            (HTuple::Tuple(x), HTuple::Tuple(y)) => {
+                x.len() == y.len() && x.iter().zip(y).all(|(i, j)| i.compatible_with(j))
             }
-        },
+            (HTuple::Leaf(v), _) => *v == other.size(),
+            (HTuple::Tuple(_), HTuple::Leaf(_)) => false,
+        }
     }
+
+    /// The minimal shape that *refines* both shapes — their join under
+    /// the compatibility order.
+    ///
+    /// ```
+    /// # use weaverbird::ht;
+    /// assert_eq!(ht!(30).common_refinement(&ht!((2, 15))).unwrap(), ht!((2, 15)));
+    /// assert_eq!(ht!(10).common_refinement(&ht!((10,))).unwrap(), ht!((10,)));
+    /// ```
+    ///
+    /// Returns [`Error::NoRefinement`] when no such shape exists.
+    pub fn common_refinement(&self, other: &IntTuple) -> Result<IntTuple> {
+        match (self, other) {
+            (HTuple::Tuple(x), HTuple::Tuple(y)) if x.len() == y.len() => {
+                x.iter().zip(y).map(|(a, b)| a.common_refinement(b)).collect()
+            }
+            (HTuple::Leaf(x), HTuple::Leaf(y)) if x == y => Ok(self.clone()),
+            (HTuple::Leaf(x), HTuple::Tuple(_)) if *x == other.size() => Ok(other.clone()),
+            (HTuple::Tuple(_), HTuple::Leaf(y)) if self.size() == *y => Ok(self.clone()),
+            _ => Err(Error::NoRefinement { lhs: self.clone(), rhs: other.clone() }),
+        }
+    }
+
+    /// The maximal shape that *coarsens* both shapes — their meet under
+    /// the compatibility order.
+    ///
+    /// A meet exists exactly when the two sizes agree. In the worst case
+    /// it is the integer size itself.
+    ///
+    /// ```
+    /// # use weaverbird::ht;
+    /// let a = ht!((4, (3, 5)));
+    /// assert_eq!(a.common_coarsening(&ht!(((2, 2), 15))).unwrap(), ht!((4, 15)));
+    /// assert_eq!(ht!((6, 5)).common_coarsening(&ht!((2, 15))).unwrap(), ht!(30));
+    /// ```
+    ///
+    /// Returns [`Error::NoCoarsening`] when the sizes differ.
+    pub fn common_coarsening(&self, other: &IntTuple) -> Result<IntTuple> {
+        // The per-mode meet, when both sides are tuples of one rank and
+        // every mode meets. Otherwise the integer size is the last
+        // resort.
+        let per_mode = match (self, other) {
+            (HTuple::Tuple(x), HTuple::Tuple(y)) if x.len() == y.len() => x
+                .iter()
+                .zip(y)
+                .map(|(a, b)| a.common_coarsening(b))
+                .collect::<Result<IntTuple>>()
+                .ok(),
+            _ => None,
+        };
+        match (per_mode, self.size(), other.size()) {
+            (Some(meet), _, _) => Ok(meet),
+            (None, a, b) if a == b => Ok(HTuple::Leaf(a)),
+            _ => Err(Error::NoCoarsening { lhs: self.clone(), rhs: other.clone() }),
+        }
+    }
+
+    /// Maps any coordinate of this shape to a *natural* coordinate.
+    ///
+    /// The decomposition is colexicographic, so the leftmost mode varies
+    /// fastest. The final mode skips its `mod` and keeps the whole
+    /// quotient. An out-of-bounds index therefore does not wrap; the
+    /// excess accumulates in the last leaf.
+    ///
+    /// ```
+    /// # use weaverbird::ht;
+    /// assert_eq!(ht!((3, 2, 4)).idx2crd(&ht!(7)).unwrap(), ht!((1, 0, 1)));
+    /// assert_eq!(ht!((3, (2, 4))).idx2crd(&ht!(7)).unwrap(), ht!((1, (0, 1))));
+    /// assert_eq!(ht!((3, 7, 2)).idx2crd(&ht!(42)).unwrap(), ht!((0, 0, 2)));
+    /// ```
+    ///
+    /// Returns [`Error::BadCoord`] when `idx` does not index this shape.
+    pub fn idx2crd(&self, idx: &IntTuple) -> Result<IntTuple> {
+        let bad_coord = || Error::BadCoord { crd: idx.clone(), shape: self.clone() };
+        match (idx, self) {
+            (HTuple::Leaf(i), HTuple::Leaf(_)) => Ok(HTuple::Leaf(*i)),
+            (HTuple::Tuple(is), HTuple::Tuple(ss)) if is.len() == ss.len() => {
+                is.iter().zip(ss).map(|(i, s)| s.idx2crd(i)).collect()
+            }
+            (HTuple::Leaf(i), HTuple::Tuple(_)) => {
+                let extents = self.leaves().copied().collect::<Vec<_>>();
+                // Every extent but the last takes a `divmod`. The last
+                // one keeps the quotient whole.
+                let head = extents.split_last().map_or(&[][..], |(_, head)| head);
+                let mut quotient = *i;
+                let mut digits = head
+                    .iter()
+                    .map(|&s| {
+                        let remainder = quotient.rem_euclid(s);
+                        quotient = quotient.div_euclid(s);
+                        remainder
+                    })
+                    .collect::<Vec<_>>();
+                digits.push(quotient);
+                HTuple::unflatten(&mut digits.into_iter(), self).ok_or_else(bad_coord)
+            }
+            _ => Err(bad_coord()),
+        }
+    }
+
+    /// Maps any coordinate of this shape to an integral coordinate.
+    ///
+    /// The recomposition is colexicographic, so the leftmost mode varies
+    /// fastest. It inverts [`Self::idx2crd`] on in-bounds input.
+    ///
+    /// `crd` need only weakly coarsen the shape: a leaf of `crd` may
+    /// stand for a whole sub-tree, which then contributes its
+    /// [`Self::size`]. That is what admits a flat coordinate against a
+    /// nested shape.
+    ///
+    /// ```
+    /// # use weaverbird::{ht, StrideScalar};
+    /// let idx = ht!((3, (2, 4))).crd2idx(&ht!((1, (0, 1)))).unwrap();
+    /// assert_eq!(idx, StrideScalar::Int(7));
+    /// let flat = ht!((3, (2, 3))).crd2idx(&ht!((2, 5))).unwrap();
+    /// assert_eq!(flat, StrideScalar::Int(17));
+    /// ```
+    ///
+    /// Returns [`Error::BadCoord`] when `crd` does not coarsen the shape.
+    pub fn crd2idx(&self, crd: &IntTuple) -> Result<StrideScalar> {
+        // One extent per leaf of `crd`: the size of the sub-shape that
+        // leaf stands for.
+        let sizes = crd
+            .zip_leaves(self)
+            .map_err(|_| Error::BadCoord { crd: crd.clone(), shape: self.clone() })?
+            .into_iter()
+            .map(|(_, sub)| sub.size())
+            .collect::<Vec<_>>();
+        let extents = HTuple::unflatten(&mut sizes.into_iter(), crd)
+            .ok_or_else(|| Error::BadCoord { crd: crd.clone(), shape: self.clone() })?;
+        crd.inner_product(&extents.compact_stride())
+    }
+
+    /// Every natural coordinate of this shape, in colexicographic order.
+    ///
+    /// ```
+    /// # use weaverbird::ht;
+    /// let all: Vec<_> = ht!((3, 2)).coordinates().collect();
+    /// assert_eq!(all.first(), Some(&ht!((0, 0))));
+    /// assert_eq!(all.len(), 6);
+    /// ```
+    pub fn coordinates(&self) -> Coordinates<'_> {
+        let extents = self.leaves().copied().collect::<Vec<_>>();
+        Coordinates {
+            digits: vec![0; extents.len()],
+            done: extents.iter().any(|&s| s <= 0),
+            extents,
+            shape: self,
+        }
+    }
+}
+
+/// Every natural coordinate of a shape, in colexicographic order. Built
+/// by [`IntTuple::coordinates`].
+#[derive(Debug)]
+pub struct Coordinates<'a> {
+    shape: &'a IntTuple,
+    extents: Vec<Int>,
+    digits: Vec<Int>,
+    done: bool,
+}
+
+impl Iterator for Coordinates<'_> {
+    type Item = IntTuple;
+
+    fn next(&mut self) -> Option<IntTuple> {
+        if self.done {
+            return None;
+        }
+        let crd = HTuple::unflatten(&mut self.digits.iter().copied(), self.shape)?;
+        // The leftmost digit runs fastest, and a carry out of the last
+        // one ends the walk.
+        self.done = self.digits.iter_mut().zip(&self.extents).all(|(digit, &extent)| {
+            *digit += 1;
+            let carry = *digit == extent;
+            if carry {
+                *digit = 0;
+            }
+            carry
+        });
+        Some(crd)
+    }
+}
+
+/// A stride from nested parentheses. Each leaf converts through
+/// [`From`], so integers and basis elements both fit.
+///
+/// ```
+/// use weaverbird::{e, stride, HTuple, StrideScalar};
+/// let flat = stride!((1, 4));
+/// let basis = stride!((1, e!(0), e!(1)));
+/// let nested = stride!((1, (4, 12)));
+/// # let _ = (flat, basis, nested);
+/// ```
+#[macro_export]
+macro_rules! stride {
+    (( $($body:tt)* )) => {
+        $crate::htuple::HTuple::Tuple($crate::stride_modes!([] [] $($body)*))
+    };
+    ($leaf:expr) => {
+        $crate::htuple::HTuple::Leaf($crate::atuple::StrideScalar::from($leaf))
+    };
+}
+
+/// Splits the body of a [`stride!`] tuple on commas, so a leaf may span
+/// several tokens.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! stride_modes {
+    // The body ran out. An unflushed leaf closes the list.
+    ([$($done:expr),*] []) => { vec![$($done),*] };
+    ([$($done:expr),*] [$($leaf:tt)+]) => { vec![$($done,)* $crate::stride!($($leaf)+)] };
+    // A comma flushes the leaf it closes.
+    ([$($done:expr),*] [$($leaf:tt)+] , $($rest:tt)*) => {
+        $crate::stride_modes!([$($done,)* $crate::stride!($($leaf)+)] [] $($rest)*)
+    };
+    // Anything else joins the leaf under construction.
+    ([$($done:expr),*] [$($leaf:tt)*] $head:tt $($rest:tt)*) => {
+        $crate::stride_modes!([$($done),*] [$($leaf)* $head] $($rest)*)
+    };
 }

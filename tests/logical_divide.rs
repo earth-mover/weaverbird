@@ -39,29 +39,20 @@
 //! rank-1 coprofile. The remaining three post-conditions are asserted.
 #![expect(clippy::unwrap_used, reason = "a test asserts the happy path")]
 
-use pinstripe::{
-    HTuple, Int, IntTuple, Layout, OptTiler, Stride, StrideScalar, TilerLeaf, atuple::as_tuple,
-    compatible, e, ht, make_layout, size, tiler_to_layout,
-};
+use weaverbird::{HTuple, IntTuple, Layout, Stride, StrideScalar, Tiler, e, ht};
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// The integer tuple as a stride, so the ported cases read like their
-/// Python source.
-fn as_stride(t: &IntTuple) -> Stride {
-    t.transform_leaf(&|v: &Int| StrideScalar::Int(*v))
-}
-
 /// `Layout(shape, stride)` over integer strides.
 fn layout(shape: IntTuple, stride: IntTuple) -> Layout {
-    Layout::new(shape, &as_stride(&stride)).unwrap()
+    Layout::from_base(shape, &Stride::from(stride)).unwrap()
 }
 
 /// `Layout(shape, stride)` over an already-built stride.
-fn strided(shape: IntTuple, stride: Stride) -> Layout {
-    Layout::new(shape, &stride).unwrap()
+fn strided(shape: IntTuple, stride: &Stride) -> Layout {
+    Layout::from_base(shape, stride).unwrap()
 }
 
 /// A stride leaf.
@@ -73,28 +64,6 @@ fn s(x: StrideScalar) -> Stride {
 /// is more than one token tree.
 fn t(modes: Vec<Stride>) -> Stride {
     HTuple::Tuple(modes)
-}
-
-/// A layout as the right-hand side of a divide.
-fn tiler(x: &Layout) -> OptTiler {
-    HTuple::Leaf(Some(TilerLeaf::Layout(x.clone())))
-}
-
-/// An extent as the right-hand side of a divide. PyCuTe's `N`, which the
-/// dispatch head promotes to `N:1`.
-fn extent(n: Int) -> OptTiler {
-    HTuple::Leaf(Some(TilerLeaf::Int(n)))
-}
-
-/// A by-mode right-hand side. `ht!` cannot spell it, because
-/// `Some(TilerLeaf::Int(4))` is more than one token tree.
-fn by_mode(modes: Vec<OptTiler>) -> OptTiler {
-    HTuple::Tuple(modes)
-}
-
-/// The absent right-hand side. PyCuTe's `None`, whole or per-mode.
-fn none() -> OptTiler {
-    HTuple::Leaf(None)
 }
 
 /// An element of a layout's codomain, read back as a coordinate of
@@ -111,7 +80,7 @@ fn as_coord(x: &StrideScalar, shape: &IntTuple) -> IntTuple {
                 .map(|(i, m)| as_coord(a.data().get(i).unwrap_or(&StrideScalar::Int(0)), m))
                 .collect(),
         ),
-        _ => as_tuple(x),
+        _ => x.to_tuple(),
     }
 }
 
@@ -122,35 +91,30 @@ fn as_coord(x: &StrideScalar, shape: &IntTuple) -> IntTuple {
 /// composition with the tiler, and between the two of them they still
 /// reach every element of the source.
 fn postcondition_logical_divide(a: &Layout, b: &Layout) {
-    let r = a.logical_divide(&tiler(b)).unwrap();
-    // PyCuTe's `tiler_to_layout(B)`. Over a layout leaf it rescales the
-    // strides by the default `e = 1`, so the tiler is `b` itself.
-    let tiler = tiler_to_layout(
-        &HTuple::Leaf(TilerLeaf::Layout(b.clone())),
-        &StrideScalar::Int(1),
-    )
-    .unwrap();
+    let r = a.logical_divide(b).unwrap();
+    // Over a layout leaf the tiler rescales the strides by the basis of
+    // the empty path, so the tiler layout is `b` itself.
+    let tiler = Tiler::from(b).to_layout().unwrap();
 
     // Post-condition: the rank is (Tile, Grid).
     assert_eq!(r.shape.rank(), 2, "{a} / {b} => {r}");
 
     // Post-condition: the Tile mode is composition with the tiler.
-    assert!(compatible(&tiler.shape, &r.index(0).unwrap().shape));
-    for i in 0..size(&tiler.shape, &[]).unwrap() {
+    assert!(tiler.shape.compatible_with(&r.mode(0).unwrap().shape));
+    for i in 0..tiler.shape.size() {
         assert_eq!(
-            r.call(&ht!((i, 0))).unwrap(),
-            a.call(&as_coord(&tiler.call(&ht!(i)).unwrap(), &a.shape))
-                .unwrap(),
+            r.eval(&ht!((i, 0))).unwrap(),
+            a.eval(&as_coord(&tiler.eval(&ht!(i)).unwrap(), &a.shape)).unwrap(),
             "tile: {a} / {b} => {r} at {i}"
         );
     }
 
     // Post-condition: every element of A appears in R as well.
-    let size_r = size(&r.shape, &[]).unwrap();
-    for i in 0..size(&a.shape, &[]).unwrap() {
-        let value = a.call(&ht!(i)).unwrap();
+    let size_r = r.shape.size();
+    for i in 0..a.shape.size() {
+        let value = a.eval(&ht!(i)).unwrap();
         assert!(
-            (0..size_r).any(|j| r.call(&ht!(j)).is_ok_and(|x| x == value)),
+            (0..size_r).any(|j| r.eval(&ht!(j)).is_ok_and(|x| x == value)),
             "cover: {a} / {b} => {r} at {i}"
         );
     }
@@ -175,14 +139,8 @@ fn logical_divide_splits_into_a_tile_and_a_grid() {
         (layout(ht!(6), ht!(2)), layout(ht!(2), ht!(1))),
         (layout(ht!(6), ht!(2)), layout(ht!(2), ht!(3))),
         (layout(ht!(6), ht!(2)), layout(ht!((2, 3)), ht!((3, 1)))),
-        (
-            layout(ht!((6, 6)), ht!((1, 12))),
-            layout(ht!((6, 3)), ht!((3, 1))),
-        ),
-        (
-            layout(ht!((6, 6)), ht!((12, 1))),
-            layout(ht!((6, 3)), ht!((3, 1))),
-        ),
+        (layout(ht!((6, 6)), ht!((1, 12))), layout(ht!((6, 3)), ht!((3, 1)))),
+        (layout(ht!((6, 6)), ht!((12, 1))), layout(ht!((6, 3)), ht!((3, 1)))),
         (layout(ht!(32), ht!(1)), layout(ht!(2), ht!(8))),
         (layout(ht!((4, 1)), ht!((1, 1))), layout(ht!(2), ht!(1))),
         (layout(ht!((4, 1)), ht!((1, 1))), layout(ht!(2), ht!(2))),
@@ -203,15 +161,12 @@ fn logical_divide_splits_into_a_tile_and_a_grid() {
 fn logical_divide_splits_a_coordinate_codomain() {
     let a = layout(ht!((8, 8)), ht!((9, 1)));
     for b in [
-        strided(ht!(4), s(e(&[0]))),
-        strided(ht!(4), s(e(&[1]))),
-        strided(ht!(4), s(e(&[0]).scale(2))),
-        strided(ht!(4), s(e(&[1]).scale(2))),
-        strided(ht!((4, 4)), t(vec![s(e(&[1])), s(e(&[0]).scale(2))])),
-        strided(
-            ht!((5, 7)),
-            t(vec![s(e(&[1]).scale(3)), s(e(&[0]).scale(2))]),
-        ),
+        strided(ht!(4), &s(e(&[0]))),
+        strided(ht!(4), &s(e(&[1]))),
+        strided(ht!(4), &s(e(&[0]).scale(2))),
+        strided(ht!(4), &s(e(&[1]).scale(2))),
+        strided(ht!((4, 4)), &t(vec![s(e(&[1])), s(e(&[0]).scale(2))])),
+        strided(ht!((5, 7)), &t(vec![s(e(&[1]).scale(3)), s(e(&[0]).scale(2))])),
     ] {
         postcondition_logical_divide(&a, &b);
     }
@@ -227,25 +182,18 @@ fn logical_divide_splits_a_coordinate_codomain() {
 #[test]
 fn a_tiler_tuple_divides_by_mode() {
     for (a, modes) in [
-        (
-            layout(ht!((6, 4)), ht!((4, 1))),
-            [layout(ht!(2), ht!(1)), layout(ht!(2), ht!(1))],
-        ),
-        (
-            layout(ht!((8, 8)), ht!((8, 1))),
-            [layout(ht!(2), ht!(1)), layout(ht!(4), ht!(1))],
-        ),
+        (layout(ht!((6, 4)), ht!((4, 1))), [layout(ht!(2), ht!(1)), layout(ht!(2), ht!(1))]),
+        (layout(ht!((8, 8)), ht!((8, 1))), [layout(ht!(2), ht!(1)), layout(ht!(4), ht!(1))]),
     ] {
-        let expected = make_layout(
+        let expected = Layout::from_modes(
             modes
                 .iter()
                 .enumerate()
-                .map(|(i, m)| a.index(i).unwrap().logical_divide(&tiler(m)).unwrap())
+                .map(|(i, m)| a.mode(i).unwrap().logical_divide(m).unwrap())
                 .collect(),
         );
         assert_eq!(
-            a.logical_divide(&by_mode(modes.iter().map(tiler).collect()))
-                .unwrap(),
+            a.logical_divide(Tiler::ByMode(modes.iter().map(Tiler::from).collect())).unwrap(),
             expected
         );
     }
@@ -260,47 +208,45 @@ fn the_dispatch_head_reads_every_tiler_form() {
     let a = layout(ht!((8, 8)), ht!((8, 1)));
 
     // RHS None, noop. PyCuTe's `logical_divide(A, None) == A`.
-    assert_eq!(a.logical_divide(&none()).unwrap(), a);
+    assert_eq!(a.logical_divide(&Tiler::Skip).unwrap(), a);
     // RHS int, A / N -> A / N:1. PyCuTe's
     // `logical_divide(A, 2) == logical_divide(A, Layout(2, 1))`.
     assert_eq!(
-        a.logical_divide(&extent(2)).unwrap(),
-        a.logical_divide(&tiler(&layout(ht!(2), ht!(1)))).unwrap()
+        a.logical_divide(Tiler::Extent(2)).unwrap(),
+        a.logical_divide(layout(ht!(2), ht!(1))).unwrap()
     );
     assert_eq!(
-        a.logical_divide(&extent(2)).unwrap(),
+        a.logical_divide(Tiler::Extent(2)).unwrap(),
         layout(ht!((2, (4, 8))), ht!((8, (16, 1))))
     );
     // RHS tuple, by-mode.
     assert_eq!(
-        a.logical_divide(&by_mode(vec![extent(2), extent(4)]))
-            .unwrap(),
+        a.logical_divide(Tiler::ByMode(vec![Tiler::Extent(2), Tiler::Extent(4)])).unwrap(),
         layout(ht!(((2, 4), (4, 2))), ht!(((8, 16), (1, 4))))
     );
     // A per-mode None leaves its mode alone.
     assert_eq!(
-        a.logical_divide(&by_mode(vec![tiler(&layout(ht!(2), ht!(1))), none()]))
+        a.logical_divide(Tiler::ByMode(vec![Tiler::from(&layout(ht!(2), ht!(1))), Tiler::Skip]))
             .unwrap(),
         layout(ht!(((2, 4), 8)), ht!(((8, 16), 1)))
     );
     assert_eq!(
-        a.logical_divide(&by_mode(vec![none(), tiler(&layout(ht!(4), ht!(1)))]))
+        a.logical_divide(Tiler::ByMode(vec![Tiler::Skip, Tiler::from(&layout(ht!(4), ht!(1)))]))
             .unwrap(),
         layout(ht!((8, (4, 2))), ht!((8, (1, 4))))
     );
     // A tiler the layout outranks runs out under `zip_longest`, and the
     // modes it does not reach take the no-op.
     assert_eq!(
-        a.logical_divide(&by_mode(vec![tiler(&layout(ht!(2), ht!(1)))]))
-            .unwrap(),
+        a.logical_divide(Tiler::ByMode(vec![Tiler::from(&layout(ht!(2), ht!(1)))])).unwrap(),
         layout(ht!(((2, 4), 8)), ht!(((8, 16), 1)))
     );
     // A tiler tuple that outranks the mode it faces is rejected: mode 0
     // of `a` is rank 1, and `(2, 2)` is rank 2.
     assert!(
-        a.logical_divide(&by_mode(vec![
-            by_mode(vec![extent(2), extent(2)]),
-            extent(4),
+        a.logical_divide(Tiler::ByMode(vec![
+            Tiler::ByMode(vec![Tiler::Extent(2), Tiler::Extent(2)]),
+            Tiler::Extent(4),
         ]))
         .is_err()
     );

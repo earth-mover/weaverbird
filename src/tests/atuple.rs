@@ -6,12 +6,13 @@
 //! argument [`IntTuple`] — `idx2crd` and `weakly_congruent` never see a
 //! stride scalar, so the Python dispatch they exercise has no
 //! counterpart.
-#![expect(clippy::unwrap_used, reason = "a test asserts the happy path")]
 
-use pinstripe::{
-    ArithTuple, HTuple, Int, IntTuple, Layout, Stride, StrideScalar, atuple::scaled_basis,
-    basis_repr, e, ht, idx2crd, is_basis, make_basis_like, proj, proj_tuple, proj_tuple_mut, size,
-    unit,
+use std::cmp::Ordering;
+
+use crate::{
+    ArithTuple, HTuple, Int, IntTuple, Layout, Stride, StrideScalar,
+    atuple::{basis_repr, is_basis, make_basis_like, proj, proj_tuple, proj_tuple_mut, unit},
+    e, ht, scaled_basis,
 };
 
 /// Builds an [`ArithTuple`] from nested parentheses, so the ported cases
@@ -35,8 +36,8 @@ fn arith(t: &IntTuple) -> StrideScalar {
 }
 
 /// `Layout(shape, stride)` over an already-built stride.
-fn strided(shape: IntTuple, stride: Stride) -> Layout {
-    Layout::set(shape, stride)
+fn strided(shape: IntTuple, stride: &Stride) -> Layout {
+    Layout::from_base(shape, stride).unwrap()
 }
 
 /// A stride leaf.
@@ -54,14 +55,8 @@ type CoordCase = (Layout, fn(Int, Int) -> StrideScalar);
 
 #[test]
 fn addition_is_elementwise() {
-    assert_eq!(
-        at!((1, 2, 3)).add(&at!((7, 8, 9))).unwrap(),
-        at!((8, 10, 12))
-    );
-    assert_eq!(
-        at!((1, 2, (3, 4))).add(&at!((7, 8, (9, 10)))).unwrap(),
-        at!((8, 10, (12, 14)))
-    );
+    assert_eq!(at!((1, 2, 3)).add(&at!((7, 8, 9))).unwrap(), at!((8, 10, 12)));
+    assert_eq!(at!((1, 2, (3, 4))).add(&at!((7, 8, (9, 10)))).unwrap(), at!((8, 10, (12, 14))));
 }
 
 #[test]
@@ -83,14 +78,8 @@ fn adding_a_non_zero_integer_is_an_incompatibility() {
 
 #[test]
 fn adding_zero_keeps_the_tuple() {
-    assert_eq!(
-        at!((1, 2, 3)).add(&StrideScalar::Int(0)).unwrap(),
-        at!((1, 2, 3))
-    );
-    assert_eq!(
-        StrideScalar::Int(0).add(&at!((1, 2, 3))).unwrap(),
-        at!((1, 2, 3))
-    );
+    assert_eq!(at!((1, 2, 3)).add(&StrideScalar::Int(0)).unwrap(), at!((1, 2, 3)));
+    assert_eq!(StrideScalar::Int(0).add(&at!((1, 2, 3))).unwrap(), at!((1, 2, 3)));
 }
 
 #[test]
@@ -98,44 +87,30 @@ fn scaled_basis_places_one_value_at_a_path() {
     assert_eq!(scaled_basis(42, &[]), StrideScalar::Int(42));
     assert_eq!(scaled_basis(42, &[0]), at!((42, 0, 0, 0, 0)));
     assert_eq!(scaled_basis(42, &[1]), at!((0, 42, 0, 0, 0)));
-    assert_eq!(
-        scaled_basis(42, &[0, 0]),
-        at!(((42, 0, 0, 0, 0), 0, 0, 0, 0))
-    );
-    assert_eq!(
-        scaled_basis(42, &[0, 1]),
-        at!(((0, 42, 0, 0, 0), 0, 0, 0, 0))
-    );
-    assert_eq!(
-        scaled_basis(42, &[1, 0]),
-        at!((0, (42, 0, 0, 0, 0), 0, 0, 0))
-    );
-    assert_eq!(
-        scaled_basis(42, &[1, 1]),
-        at!((0, (0, 42, 0, 0, 0), 0, 0, 0))
-    );
+    assert_eq!(scaled_basis(42, &[0, 0]), at!(((42, 0, 0, 0, 0), 0, 0, 0, 0)));
+    assert_eq!(scaled_basis(42, &[0, 1]), at!(((0, 42, 0, 0, 0), 0, 0, 0, 0)));
+    assert_eq!(scaled_basis(42, &[1, 0]), at!((0, (42, 0, 0, 0, 0), 0, 0, 0)));
+    assert_eq!(scaled_basis(42, &[1, 1]), at!((0, (0, 42, 0, 0, 0), 0, 0, 0)));
 }
 
 #[test]
 fn scaling_a_basis_scales_its_value() {
     assert_eq!(scaled_basis(42, &[]).scale(2), StrideScalar::Int(84));
     assert_eq!(scaled_basis(42, &[0]).scale(2), at!((84, 0, 0, 0, 0)));
-    assert_eq!(
-        scaled_basis(42, &[1, 0]).scale(2),
-        at!((0, (84, 0, 0, 0, 0), 0, 0, 0))
-    );
+    assert_eq!(scaled_basis(42, &[1, 0]).scale(2), at!((0, (84, 0, 0, 0, 0), 0, 0, 0)));
 }
 
 #[test]
 fn the_order_on_coordinates_follows_the_colexicographic_index() {
     let shape = ht!((4, (5, 6), 2));
-    let crd = |i: Int| arith(&idx2crd(&ht!(i), &shape).unwrap());
-    let extent = size(&shape, &[]).unwrap();
+    let crd = |i: Int| arith(&shape.idx2crd(&ht!(i)).unwrap());
+    let extent = shape.size();
+    let precedes = |a: &StrideScalar, b: &StrideScalar| a.try_cmp(b).unwrap() == Ordering::Less;
     for i in 0..extent {
-        assert!(StrideScalar::Int(0) < crd(i + 1));
+        assert!(precedes(&StrideScalar::Int(0), &crd(i + 1)));
         for j in i + 1..extent {
-            assert!(crd(i) < crd(j));
-            assert!(crd(j) > crd(i));
+            assert!(precedes(&crd(i), &crd(j)));
+            assert_eq!(crd(j).try_cmp(&crd(i)).unwrap(), Ordering::Greater);
         }
     }
 }
@@ -145,30 +120,19 @@ fn a_basis_strided_layout_evaluates_to_a_coordinate() {
     // Each case pairs a layout with the coordinate `A(i, j)` it lands
     // on, over the two mode extents PyCuTe sweeps.
     let cases: Vec<CoordCase> = vec![
-        (
-            strided(ht!((5, 4)), t(vec![s(e(&[0])), s(e(&[1]))])),
-            |i, j| at!((i, j)),
-        ),
-        (
-            strided(ht!((5, 4)), t(vec![s(e(&[0])), s(e(&[2]))])),
-            |i, j| at!((i, 0, j)),
-        ),
-        (
-            strided(ht!((5, 4)), t(vec![s(e(&[2])), s(e(&[1]))])),
-            |i, j| at!((0, j, i)),
-        ),
-        (
-            strided(ht!((5, 4)), t(vec![s(e(&[2])), s(StrideScalar::Int(0))])),
-            |i, _| at!((0, 0, i)),
-        ),
-        (
-            strided(ht!((5, 4)), t(vec![s(e(&[2])), s(e(&[1, 3]))])),
-            |i, j| at!((0, (0, 0, 0, j), i)),
-        ),
+        (strided(ht!((5, 4)), &t(vec![s(e(&[0])), s(e(&[1]))])), |i, j| at!((i, j))),
+        (strided(ht!((5, 4)), &t(vec![s(e(&[0])), s(e(&[2]))])), |i, j| at!((i, 0, j))),
+        (strided(ht!((5, 4)), &t(vec![s(e(&[2])), s(e(&[1]))])), |i, j| at!((0, j, i))),
+        (strided(ht!((5, 4)), &t(vec![s(e(&[2])), s(StrideScalar::Int(0))])), |i, _| {
+            at!((0, 0, i))
+        }),
+        (strided(ht!((5, 4)), &t(vec![s(e(&[2])), s(e(&[1, 3]))])), |i, j| {
+            at!((0, (0, 0, 0, j), i))
+        }),
         (
             strided(
                 ht!((4, (4, 2))),
-                t(vec![s(e(&[1])), t(vec![s(e(&[0])), s(e(&[1]).scale(4))])]),
+                &t(vec![s(e(&[1])), t(vec![s(e(&[0])), s(e(&[1]).scale(4))])]),
             ),
             |i, j| {
                 // `at!` cannot spell an arithmetic leaf, so the two
@@ -179,15 +143,11 @@ fn a_basis_strided_layout_evaluates_to_a_coordinate() {
         ),
     ];
     for (a, expected) in cases {
-        let rows = size(&a.shape, &[0]).unwrap();
-        let cols = size(&a.shape, &[1]).unwrap();
+        let rows = a.shape.get(&[0]).unwrap().size();
+        let cols = a.shape.get(&[1]).unwrap().size();
         for i in 0..rows {
             for j in 0..cols {
-                assert_eq!(
-                    a.call(&ht!((i, j))).unwrap(),
-                    expected(i, j),
-                    "{a} at ({i},{j})"
-                );
+                assert_eq!(a.eval(&ht!((i, j))).unwrap(), expected(i, j), "{a} at ({i},{j})");
             }
         }
     }
@@ -233,7 +193,7 @@ fn distinct_paths_give_distinct_basis_elements() {
 #[test]
 fn zero_precedes_every_basis_element() {
     for path in test_paths() {
-        assert!(StrideScalar::Int(0) < e(&path));
+        assert_eq!(StrideScalar::Int(0).try_cmp(&e(&path)).unwrap(), Ordering::Less);
     }
 }
 
@@ -245,10 +205,7 @@ fn one_element_admits_several_representations() {
 
 #[test]
 fn every_all_zero_tuple_equals_the_integer_zero() {
-    assert_eq!(
-        StrideScalar::Arith(ArithTuple::from_data(vec![])),
-        StrideScalar::Int(0)
-    );
+    assert_eq!(StrideScalar::Arith(ArithTuple::from_data(vec![])), StrideScalar::Int(0));
     assert_eq!(at!((0, 0, 0)), StrideScalar::Int(0));
     assert_eq!(at!(((0, 0))), StrideScalar::Int(0));
     assert_eq!(e(&[2]).scale(0), StrideScalar::Int(0));
@@ -263,7 +220,7 @@ fn an_integer_and_a_tuple_sit_at_different_ranks() {
 #[test]
 fn equal_elements_hash_alike() {
     use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
+    use std::hash::{Hash as _, Hasher as _};
 
     let hash_of = |x: &StrideScalar| {
         let mut hasher = DefaultHasher::new();
@@ -310,9 +267,8 @@ fn basis_repr_round_trips_through_a_sum() {
         at!((1, 2, (3, 4))),
     ];
     for x in cases {
-        let rebuilt = basis_repr(&x)
-            .into_iter()
-            .try_fold(StrideScalar::Int(0), |acc, (value, path)| {
+        let rebuilt =
+            basis_repr(&x).into_iter().try_fold(StrideScalar::Int(0), |acc, (value, path)| {
                 acc.add(&scaled_basis(value, &path))
             });
         assert_eq!(rebuilt.unwrap(), x);
@@ -358,16 +314,10 @@ fn proj_and_unit_reject_a_sum() {
 #[test]
 fn make_basis_like_puts_a_unit_at_every_leaf() {
     let leaf = |path: &[usize]| HTuple::Leaf(e(path));
-    assert_eq!(
-        make_basis_like(&ht!((3, 4))),
-        HTuple::Tuple(vec![leaf(&[0]), leaf(&[1])])
-    );
+    assert_eq!(make_basis_like(&ht!((3, 4))), HTuple::Tuple(vec![leaf(&[0]), leaf(&[1])]));
     assert_eq!(
         make_basis_like(&ht!(((3, 4), 5))),
-        HTuple::Tuple(vec![
-            HTuple::Tuple(vec![leaf(&[0, 0]), leaf(&[0, 1])]),
-            leaf(&[1]),
-        ])
+        HTuple::Tuple(vec![HTuple::Tuple(vec![leaf(&[0, 0]), leaf(&[0, 1])]), leaf(&[1]),])
     );
 }
 
@@ -387,10 +337,7 @@ fn proj_tuple_mut_writes_through() {
     if let HTuple::Leaf(slot) = proj_tuple_mut(&mut x, &e(&[1])).unwrap() {
         slot.push(3);
     }
-    assert_eq!(
-        x,
-        HTuple::Tuple(vec![HTuple::Leaf(vec![1]), HTuple::Leaf(vec![2, 3])])
-    );
+    assert_eq!(x, HTuple::Tuple(vec![HTuple::Leaf(vec![1]), HTuple::Leaf(vec![2, 3])]));
 }
 
 #[test]

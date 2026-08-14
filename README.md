@@ -1,25 +1,26 @@
-# pinstripe
+# weaverbird: Weave access patterns for your arrays
 
 A Rust transliteration of the CuTe layout algebra.
 
-The source is [PyCuTe]. Each module here mirrors one PyCuTe module, with
-the same names, the same decomposition, and the same algorithms, so you
-can check a file against its Python counterpart line by line. The test
-suite is a port of the PyCuTe test suite.
+The source is [PyCuTe].
 
-A layout is `Shape : Stride`. Both halves are hierarchical integer
-tuples. A layout maps a coordinate to an offset. Give it basis strides
-instead, and it maps a coordinate to a coordinate — that is an identity
-tensor, and it is what makes this algebra useful for describing how one
-iteration space reads another.
+## The name
 
-## What this crate does not do
+A weaverbird builds its nest by interlacing strips on a regular pitch.
+That is what this algebra describes. `logical_product` lays a tile over a
+grid, and the two variants are the two weaves:
 
-- **No row-major variant.** The algebra is colexicographic, as CuTe
-  defines it. A caller that wants row-major order converts at its own
-  boundary.
-- **No axis names.** A layout is positional. Names are a labelling, and a
-  labelling belongs to the caller.
+```text
+blocked_product              raked_product
+  A A A C C C                  A C A C A C
+  A A A C C C                  B D B D B D
+  B B B D D D                  A C A C A C
+  B B B D D D                  B D B D B D
+```
+
+Each cell carries the tile it came from. `blocked` keeps a tile
+contiguous; `raked` spreads it on a sublattice, so all four tiles
+interpenetrate and every one runs through the whole cloth.
 
 ## Divergences from PyCuTe
 
@@ -48,15 +49,15 @@ functions that `layout.rs` calls, so the dependency runs
 
 ## State
 
-| module | PyCuTe source | state |
-|---|---|---|
-| `htuple` | `htuple.py` | ported |
-| `atuple` | `atuple.py` | ported |
-| `shape` | `shape.py` | ported |
-| `stride` | `stride.py` | ported |
-| `layout` | `layout.py` | core ported; algebra in progress |
-| `algebra` | `algebra.py` | in progress |
-| `swizzle`, `accessor`, `tensor` | — | not planned |
+| module                          | PyCuTe source | state                                                              |
+|---------------------------------|---------------|--------------------------------------------------------------------|
+| `htuple`                        | `htuple.py`   | ported                                                             |
+| `atuple`                        | `atuple.py`   | ported                                                             |
+| `shape`                         | `shape.py`    | ported                                                             |
+| `stride`                        | `stride.py`   | ported                                                             |
+| `layout`                        | `layout.py`   | ported                                                             |
+| `algebra`                       | `algebra.py`  | ported, less `zipped_divide` / `blocked_product` / `raked_product` |
+| `swizzle`, `accessor`, `tensor` | —             | not planned                                                        |
 
 `tensor.py` and `accessor.py` are out of scope on purpose. This crate is
 the layout algebra — shapes, strides, and the operations over them. It

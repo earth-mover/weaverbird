@@ -4,37 +4,27 @@
 //! every coordinate, and both are here in full.
 //!
 //! The `sympy` cases are gone for good, as they are in the coalesce port:
-//! [`Int`](pinstripe::Int) is the only integer here, so
+//! [`Int`](weaverbird::Int) is the only integer here, so
 //! `test_right_inverse_sympy` has no symbolic extent to carry through the
 //! chain, and `test_right_inverse_sympy_substitution` — which only checks
 //! that a substituted symbolic result is still an inverse — has nothing
 //! left to substitute.
 #![expect(clippy::unwrap_used, reason = "a test asserts the happy path")]
 
-use pinstripe::{
-    HTuple, Int, IntTuple, Layout, OptTiler, Stride, StrideScalar, Tiler, TilerLeaf,
-    atuple::as_tuple, coprofile, e, ht, htuple::weakly_congruent, make_layout, size,
-    tiler_to_layout,
-};
+use weaverbird::{HTuple, Int, IntTuple, Layout, Stride, StrideScalar, Tiler, e, ht};
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// The integer tuple as a stride, so the ported cases read like their
-/// Python source.
-fn as_stride(t: &IntTuple) -> Stride {
-    t.transform_leaf(&|v: &Int| StrideScalar::Int(*v))
-}
-
 /// `Layout(shape, stride)` over integer strides.
 fn layout(shape: IntTuple, stride: IntTuple) -> Layout {
-    Layout::new(shape, &as_stride(&stride)).unwrap()
+    Layout::from_base(shape, &Stride::from(stride)).unwrap()
 }
 
 /// `Layout(shape, stride)` over an already-built stride.
-fn strided(shape: IntTuple, stride: Stride) -> Layout {
-    Layout::set(shape, stride)
+fn strided(shape: IntTuple, stride: &Stride) -> Layout {
+    Layout::from_base(shape, stride).unwrap()
 }
 
 /// A stride leaf.
@@ -54,31 +44,21 @@ fn t(modes: Vec<Stride>) -> Stride {
 /// it indexes like a tuple. Rust's `call` takes an [`IntTuple`], so the
 /// conversion is spelled out.
 fn crd(x: &StrideScalar) -> IntTuple {
-    as_tuple(x)
-}
-
-/// A layout as the right-hand side of a composition.
-fn tiler(x: &Layout) -> OptTiler {
-    HTuple::Leaf(Some(TilerLeaf::Layout(x.clone())))
+    x.to_tuple()
 }
 
 /// The tiler of a plain shape.
 fn int_tiler(shape: &IntTuple) -> Tiler {
-    shape.transform_leaf(&|v: &Int| TilerLeaf::Int(*v))
-}
-
-/// The default `e` of [`tiler_to_layout`].
-fn one() -> StrideScalar {
-    StrideScalar::Int(1)
+    match shape {
+        HTuple::Leaf(v) => Tiler::Extent(*v),
+        HTuple::Tuple(modes) => Tiler::ByMode(modes.iter().map(int_tiler).collect()),
+    }
 }
 
 /// `composition(tiler_to_layout(shape), inner)`, the shape PyCuTe's MMA
 /// TV cases are built in.
-fn tv(shape: IntTuple, inner: &Layout) -> Layout {
-    tiler_to_layout(&int_tiler(&shape), &one())
-        .unwrap()
-        .composition(&tiler(inner))
-        .unwrap()
+fn tv(shape: &IntTuple, inner: &Layout) -> Layout {
+    int_tiler(shape).to_layout().unwrap().compose(inner).unwrap()
 }
 
 /// The SM70 MMA 8x8x4 C TV layout, over the two trailing coefficients
@@ -86,7 +66,7 @@ fn tv(shape: IntTuple, inner: &Layout) -> Layout {
 fn sm70_c_tv(a: Int, b: Int) -> Layout {
     strided(
         ht!(((2, 2, 2), (2, 2, 2))),
-        t(vec![
+        &t(vec![
             t(vec![s(e(&[0])), s(e(&[1]).scale(2)), s(e(&[0]).scale(a))]),
             t(vec![s(e(&[1])), s(e(&[0]).scale(2)), s(e(&[1]).scale(b))]),
         ]),
@@ -100,28 +80,21 @@ fn sm70_c_tv(a: Int, b: Int) -> Layout {
 /// the codomain is `Z`, so does the canonical one.
 fn postcondition_right_inverse(source: &Layout) {
     let inv = source.right_inverse().unwrap();
-    assert!(
-        weakly_congruent(&coprofile(source, &[]).unwrap(), &inv.shape),
-        "{source} => {inv}"
-    );
+    assert!(source.coshape().unwrap().weakly_congruent(&inv.shape), "{source} => {inv}");
 
     // Generalized right inverse condition.
-    for i in 0..size(&inv.shape, &[]).unwrap() {
-        let r = inv.call(&HTuple::Leaf(i)).unwrap();
-        let l_r = source.call(&crd(&r)).unwrap();
-        assert_eq!(
-            inv.call(&crd(&l_r)).unwrap(),
-            r,
-            "{source} => {inv} disagree at {i}"
-        );
+    for i in 0..inv.shape.size() {
+        let r = inv.eval(&HTuple::Leaf(i)).unwrap();
+        let l_r = source.eval(&crd(&r)).unwrap();
+        assert_eq!(inv.eval(&crd(&l_r)).unwrap(), r, "{source} => {inv} disagree at {i}");
     }
 
     // Canonical right inverse post-condition, over a codomain of `Z`.
-    if matches!(source.call(&HTuple::Leaf(0)).unwrap(), StrideScalar::Int(_)) {
-        for i in 0..size(&inv.shape, &[]).unwrap() {
-            let r = inv.call(&HTuple::Leaf(i)).unwrap();
+    if matches!(source.eval(&HTuple::Leaf(0)).unwrap(), StrideScalar::Int(_)) {
+        for i in 0..inv.shape.size() {
+            let r = inv.eval(&HTuple::Leaf(i)).unwrap();
             assert_eq!(
-                source.call(&crd(&r)).unwrap(),
+                source.eval(&crd(&r)).unwrap(),
                 StrideScalar::Int(i),
                 "{source} => {inv} is not canonical at {i}"
             );
@@ -132,20 +105,13 @@ fn postcondition_right_inverse(source: &Layout) {
 /// PyCuTe's `postcondition_left_inverse`.
 fn postcondition_left_inverse(source: &Layout) {
     let inv = source.left_inverse().unwrap();
-    assert!(
-        weakly_congruent(&coprofile(source, &[]).unwrap(), &inv.shape),
-        "{source} => {inv}"
-    );
+    assert!(source.coshape().unwrap().weakly_congruent(&inv.shape), "{source} => {inv}");
 
     // Generalized left inverse condition.
-    for i in 0..size(&source.shape, &[]).unwrap() {
-        let l = source.call(&HTuple::Leaf(i)).unwrap();
-        let inv_l = inv.call(&crd(&l)).unwrap();
-        assert_eq!(
-            source.call(&crd(&inv_l)).unwrap(),
-            l,
-            "{source} => {inv} disagree at {i}"
-        );
+    for i in 0..source.shape.size() {
+        let l = source.eval(&HTuple::Leaf(i)).unwrap();
+        let inv_l = inv.eval(&crd(&l)).unwrap();
+        assert_eq!(source.eval(&crd(&inv_l)).unwrap(), l, "{source} => {inv} disagree at {i}");
     }
 }
 
@@ -181,10 +147,7 @@ fn right_inverse_inverts_over_integer_strides() {
 fn right_inverse_handles_a_non_injective_layout() {
     // The largest right inverse is still defined: the modes that break
     // the stride chain are dropped rather than rejected.
-    for source in [
-        layout(ht!((4, 5, 6)), ht!((1, 1, 4))),
-        layout(ht!((7, 5, 9)), ht!((2, 0, 1))),
-    ] {
+    for source in [layout(ht!((4, 5, 6)), ht!((1, 1, 4))), layout(ht!((7, 5, 9)), ht!((2, 0, 1)))] {
         postcondition_right_inverse(&source);
     }
 }
@@ -192,24 +155,18 @@ fn right_inverse_handles_a_non_injective_layout() {
 #[test]
 fn right_inverse_inverts_over_basis_strides() {
     for source in [
-        strided(ht!((4, 5)), t(vec![s(e(&[0])), s(e(&[1]))])),
-        strided(ht!((4, 5)), t(vec![s(e(&[1])), s(e(&[0]))])),
-        strided(ht!((4, 5)), t(vec![s(e(&[1])), s(e(&[4, 1]))])),
-        strided(
-            ht!((4, 5)),
-            t(vec![s(e(&[0]).scale(2)), s(e(&[1]).scale(2))]),
-        ),
+        strided(ht!((4, 5)), &t(vec![s(e(&[0])), s(e(&[1]))])),
+        strided(ht!((4, 5)), &t(vec![s(e(&[1])), s(e(&[0]))])),
+        strided(ht!((4, 5)), &t(vec![s(e(&[1])), s(e(&[4, 1]))])),
+        strided(ht!((4, 5)), &t(vec![s(e(&[0]).scale(2)), s(e(&[1]).scale(2))])),
         // SM70 MMA 8x8x4 C TV inverse.
         sm70_c_tv(4, 4),
         sm70_c_tv(5, 5),
         sm70_c_tv(5, 4),
         // SM70 MMA 8x8x4 A TV inverse.
-        tv(ht!((8, 4)), &layout(ht!(((4, 2), 4)), ht!(((8, 4), 1)))),
+        tv(&ht!((8, 4)), &layout(ht!(((4, 2), 4)), ht!(((8, 4), 1)))),
         // SM80 MMA 16x8 TV inverse.
-        tv(
-            ht!((16, 8)),
-            &layout(ht!(((4, 8), (2, 2))), ht!(((32, 1), (16, 8)))),
-        ),
+        tv(&ht!((16, 8)), &layout(ht!(((4, 8), (2, 2))), ht!(((32, 1), (16, 8))))),
     ] {
         postcondition_right_inverse(&source);
     }
@@ -223,10 +180,7 @@ fn right_inverse_reads_off_the_worked_cases() {
     );
     // A strided layout is not surjective, so only the trivial inverse
     // survives.
-    assert_eq!(
-        layout(ht!(4), ht!(2)).right_inverse().unwrap(),
-        layout(ht!(1), ht!(0))
-    );
+    assert_eq!(layout(ht!(4), ht!(2)).right_inverse().unwrap(), layout(ht!(1), ht!(0)));
 }
 
 // ---------------------------------------------------------------------------
@@ -283,15 +237,9 @@ fn left_inverse_rejects_an_unordered_chain() {
     // Coprime (non-divisible) strides are injective but unordered, and
     // are rejected as a deliberate simplification even though a layout
     // left inverse exists.
-    for source in [
-        layout(ht!((2, 2)), ht!((2, 3))),
-        layout(ht!((2, 2)), ht!((2, 5))),
-    ] {
+    for source in [layout(ht!((2, 2)), ht!((2, 3))), layout(ht!((2, 2)), ht!((2, 5)))] {
         assert!(
-            matches!(
-                source.left_inverse(),
-                Err(pinstripe::Error::Divisibility { .. })
-            ),
+            matches!(source.left_inverse(), Err(weaverbird::Error::UnorderedStrides { .. })),
             "{source} should not form an ordered chain"
         );
     }
@@ -306,10 +254,7 @@ fn left_inverse_rejects_a_non_injective_layout() {
         layout(ht!((2, 3)), ht!((2, 1))),
     ] {
         assert!(
-            matches!(
-                source.left_inverse(),
-                Err(pinstripe::Error::NonInjective { .. })
-            ),
+            matches!(source.left_inverse(), Err(weaverbird::Error::NonInjective { .. })),
             "{source} should be non-injective"
         );
     }
@@ -318,31 +263,22 @@ fn left_inverse_rejects_a_non_injective_layout() {
 #[test]
 fn left_inverse_inverts_over_basis_strides() {
     for source in [
-        strided(ht!((4, 5)), t(vec![s(e(&[0])), s(e(&[1]))])),
-        strided(ht!((4, 5)), t(vec![s(e(&[1])), s(e(&[0]))])),
-        strided(ht!((4, 5)), t(vec![s(e(&[1])), s(e(&[4, 1]))])),
-        strided(
-            ht!((4, 5)),
-            t(vec![s(e(&[0]).scale(2)), s(e(&[1]).scale(2))]),
-        ),
+        strided(ht!((4, 5)), &t(vec![s(e(&[0])), s(e(&[1]))])),
+        strided(ht!((4, 5)), &t(vec![s(e(&[1])), s(e(&[0]))])),
+        strided(ht!((4, 5)), &t(vec![s(e(&[1])), s(e(&[4, 1]))])),
+        strided(ht!((4, 5)), &t(vec![s(e(&[0]).scale(2)), s(e(&[1]).scale(2))])),
         strided(
             ht!((3, (2, 2))),
-            t(vec![
-                s(e(&[0]).scale(34)),
-                t(vec![s(e(&[0]).scale(2)), s(e(&[1]).scale(2))]),
-            ]),
+            &t(vec![s(e(&[0]).scale(34)), t(vec![s(e(&[0]).scale(2)), s(e(&[1]).scale(2))])]),
         ),
         // SM70 MMA 8x8x4 C TV inverse.
         sm70_c_tv(4, 4),
         sm70_c_tv(6, 6),
         sm70_c_tv(6, 4),
         // SM70 MMA 8x8x4 A TV inverse.
-        tv(ht!((8, 4)), &layout(ht!(((4, 2), 4)), ht!(((8, 4), 1)))),
+        tv(&ht!((8, 4)), &layout(ht!(((4, 2), 4)), ht!(((8, 4), 1)))),
         // SM80 MMA 16x8 TV inverse.
-        tv(
-            ht!((16, 8)),
-            &layout(ht!(((4, 8), (2, 2))), ht!(((32, 1), (16, 8)))),
-        ),
+        tv(&ht!((16, 8)), &layout(ht!(((4, 8), (2, 2))), ht!(((32, 1), (16, 8))))),
     ] {
         postcondition_left_inverse(&source);
     }
@@ -361,18 +297,11 @@ fn left_inverse_recovers_a_tv_layout_through_its_data_layout() {
 
     // data addr -> data coord. The appended `1:0` gives the
     // off-the-ends the stride-0.
-    let inv_data = make_layout(vec![data.left_inverse().unwrap(), layout(ht!(1), ht!(0))]);
+    let inv_data = Layout::from_modes(vec![data.left_inverse().unwrap(), layout(ht!(1), ht!(0))]);
     // (tid, vid) -> data coord.
-    let tv_data = inv_data.composition(&tiler(&atom_tv)).unwrap();
+    let tv_data = inv_data.compose(&atom_tv).unwrap();
 
-    let all = HTuple::Leaf(Some(1));
-    assert_eq!(
-        data.composition(&tiler(&tv_data))
-            .unwrap()
-            .coalesce(&all)
-            .unwrap(),
-        atom_tv.coalesce(&all).unwrap()
-    );
+    assert_eq!(data.compose(&tv_data).unwrap().coalesced().unwrap(), atom_tv.coalesced().unwrap());
 }
 
 #[test]

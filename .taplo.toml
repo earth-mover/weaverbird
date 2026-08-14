@@ -1,0 +1,8 @@
+# taplo config for formatting the project's TOML.
+
+include = ["**/*.toml"]
+exclude = [".direnv/**", "target/**"]
+
+[formatting]
+reorder_keys = false
+reorder_arrays = false

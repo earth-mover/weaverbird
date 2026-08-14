@@ -1,34 +1,35 @@
-//! A Rust transliteration of the CuTe layout algebra.
+//! The CuTe layout algebra in Rust.
 //!
-//! The source is PyCuTe (`pycute/`), and the modules here mirror it one
-//! for one. Names, decomposition, and algorithms follow that source, so
-//! each file is checkable against its Python counterpart. The test suite
-//! is a port of the PyCuTe test suite.
+//! A [`Layout`] maps a coordinate domain to a codomain. It pairs a shape
+//! — an [`IntTuple`] of extents — with a congruent stride. The algebra
+//! composes, inverts, divides and multiplies those maps.
 //!
-//! # What this crate does not do
+//! ```
+//! use weaverbird::{layout, Layout, Tiler};
 //!
-//! The algebra is colexicographic, as CuTe defines it. The crate adds no
-//! row-major variant. A caller that wants row-major order converts at its
-//! own boundary.
+//! // A 4x8 tile, row-major, and the element it holds at (2, 3).
+//! let a = layout!((4, 8):(8, 1));
+//! assert_eq!(a.eval(&weaverbird::ht!((2, 3))).unwrap().as_int(), Some(19));
 //!
-//! The crate also carries no names for axes. A layout is positional.
+//! // Split a 24-element domain into 4-element tiles of stride 2.
+//! let split = layout!(24:1).logical_divide(layout!(4:2)).unwrap();
+//! assert_eq!(split, layout!((4, (2, 3)):(2, (1, 8))));
 //!
-//! # Divergences from PyCuTe
+//! // A tiler dispatches by mode. `Tiler::Skip` leaves a mode alone.
+//! let by_mode: Tiler = vec![Tiler::from(2), Tiler::Skip].into();
+//! assert_eq!(a.logical_divide(by_mode).unwrap().shape, weaverbird::ht!(((2, 2), 8)));
+//! ```
 //!
-//! Python tells a tuple from a leaf at run time. Rust needs a type, so
-//! [`HTuple`] makes the two cases variants of one enum.
+//! # Conventions
 //!
-//! Python raises. This crate returns [`Result`](std::result::Result).
+//! Fallible operations return [`Result`]. Nothing panics on bad input.
 //!
-//! [`ArithTuple`] stores its children as PyCuTe stores them, and its
-//! equality extends trailing positions by zero. `Hash` therefore hashes a
-//! trimmed form, so that equal values hash alike.
+//! # Origin
 //!
-//! PyCuTe's integers may be symbolic, and `typedefs.is_static` tells a
-//! concrete one from a symbolic one. Here [`Int`] is the only integer, so
-//! `is_static` would always be true. The crate omits it, and the ordering
-//! helpers PyCuTe guards with it — the `_stride_key` sorts in `layout.py`
-//! — collapse to a plain sort.
+//! The algorithms are a port of PyCuTe (`pycute/`), and the test suite is
+//! a port of its test suite. The API is not: the dispatch facade, the
+//! duck-typed accessors and the `None` arguments of the Python source are
+//! methods, iterators and dedicated types here.
 
 pub mod algebra;
 pub mod atuple;
@@ -39,25 +40,10 @@ pub mod shape;
 pub mod stride;
 pub mod typedefs;
 
-pub use algebra::{
-    coalesce, coalesce_z, complement, composition, greatest_common_domain, layout_add,
-    left_inverse, nullspace, right_inverse,
-};
-pub use atuple::{
-    ArithTuple, StrideScalar, basis_repr, e, is_basis, make_basis_like, proj, proj_tuple,
-    proj_tuple_mut, unit,
-};
+pub use algebra::{greatest_common_domain, layout_add};
+pub use atuple::{ArithTuple, StrideScalar, e, scaled_basis};
 pub use error::{Error, Result};
-pub use htuple::HTuple;
-pub use layout::{
-    Layout, OptTiler, Profile, Scale, Tiler, TilerLeaf, make_layout, make_layout_like,
-    make_ordered_layout, recast, tiler_to_layout,
-};
-pub use shape::{
-    common_coarsening, common_refinement, compatible, coordinates, crd2idx, depth, idx2crd, rank,
-    shape, size,
-};
-// `coalesce_z` stays behind its module, as PyCuTe keeps `_coalesce_z`
-// private to `stride.py`; the exported `coalesce_z` is the `Layout` one.
-pub use stride::{Coshape, coprofile, coshape, inner_product, prefix_product, stride};
+pub use htuple::{HTuple, Leaves};
+pub use layout::{Layout, Profile, Scale, Tiler};
+pub use shape::Coordinates;
 pub use typedefs::{Int, IntTuple, Stride};

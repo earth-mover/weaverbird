@@ -1,0 +1,12 @@
+# Give rust-analyzer its own target dir (target/rust-analyzer). Otherwise its
+# background `cargo check` fights terminal builds for the same build lock, and
+# its stale-hash artifacts land in target/debug/deps — the E0464 "multiple
+# candidates for dependency" failure. Costs some extra disk; buys back the
+# contention.
+#
+# This is the project-level default, picked up by any LSP client that doesn't
+# send its own config. Client settings (e.g. eglot's
+# `eglot-workspace-configuration`) still win.
+
+[cargo]
+targetDir = true

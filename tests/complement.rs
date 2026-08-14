@@ -1,6 +1,6 @@
 //! Ported from `test/test_complement.py`.
 //!
-//! `test_complement_sympy` is gone: [`Int`](pinstripe::Int) is the only
+//! `test_complement_sympy` is gone: [`Int`](weaverbird::Int) is the only
 //! integer here, so there is no symbolic extent to carry through. Its
 //! substitution twin, `test_complement_sympy_substitution`, is concrete
 //! and is ported in full — and the one symbolic `extend` case it does
@@ -9,13 +9,7 @@
 
 use std::cmp::Ordering;
 
-use pinstripe::{
-    HTuple, Int, IntTuple, Layout, Stride, StrideScalar,
-    atuple::{as_tuple, scaled_basis},
-    coprofile, e, ht,
-    htuple::weakly_congruent,
-    make_layout, size,
-};
+use weaverbird::{HTuple, IntTuple, Layout, Stride, StrideScalar, e, ht, scaled_basis};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -23,13 +17,12 @@ use pinstripe::{
 
 /// `Layout(shape, stride)` over integer strides.
 fn layout(shape: IntTuple, stride: IntTuple) -> Layout {
-    let stride = stride.transform_leaf(&|v: &Int| StrideScalar::Int(*v));
-    Layout::new(shape, &stride).unwrap()
+    Layout::from_base(shape, &stride.into()).unwrap()
 }
 
 /// `Layout(shape, stride)` over a stride that holds basis elements.
-fn strided(shape: IntTuple, stride: Stride) -> Layout {
-    Layout::new(shape, &stride).unwrap()
+fn strided(shape: IntTuple, stride: &Stride) -> Layout {
+    Layout::from_base(shape, stride).unwrap()
 }
 
 /// A stride leaf.
@@ -47,7 +40,7 @@ fn t(modes: Vec<Stride>) -> Stride {
 /// straight into another layout; [`Layout::call`] takes an [`IntTuple`],
 /// so the conversion is spelled out.
 fn crd(x: &StrideScalar) -> IntTuple {
-    as_tuple(x)
+    x.to_tuple()
 }
 
 /// PyCuTe's `postcondition_complement`.
@@ -55,31 +48,26 @@ fn crd(x: &StrideScalar) -> IntTuple {
 /// The result is weakly congruent with the codomain, its own codomain
 /// is ordered, and it meets the source's codomain nowhere.
 fn postcondition_complement(source: &Layout) -> Layout {
-    let result = source.complement(None).unwrap();
+    let result = source.complement().unwrap();
 
     // Post-condition: weak congruence with the codomain.
-    assert!(
-        weakly_congruent(&coprofile(source, &[]).unwrap(), &result.shape),
-        "{source} => {result}"
-    );
+    assert!(source.coshape().unwrap().weakly_congruent(&result.shape), "{source} => {result}");
 
     // Post-condition: orderedness and disjointness of the codomains.
-    let size_r = size(&result.shape, &[]).unwrap();
-    let size_l = size(&source.shape, &[]).unwrap();
+    let size_r = result.shape.size();
+    let size_l = source.shape.size();
     for i in 1..10 + size_r {
-        let (previous, current) = (
-            result.call(&ht!(i - 1)).unwrap(),
-            result.call(&ht!(i)).unwrap(),
-        );
+        let (previous, current) =
+            (result.eval(&ht!(i - 1)).unwrap(), result.eval(&ht!(i)).unwrap());
         assert_eq!(
-            previous.partial_cmp(&current),
+            previous.try_cmp(&current).ok(),
             Some(Ordering::Less),
             "ordered: {source} => {result} at {i}"
         );
         for j in 0..size_l {
             assert_ne!(
                 current,
-                source.call(&ht!(j)).unwrap(),
+                source.eval(&ht!(j)).unwrap(),
                 "disjoint: {source} => {result} at ({i}, {j})"
             );
         }
@@ -97,16 +85,14 @@ fn postcondition_complement_strong(source: &Layout) {
     let result = postcondition_complement(source);
 
     // Generalized inverse conditions.
-    let completed = make_layout(vec![source.clone(), result]);
+    let completed = Layout::from_modes(vec![source.clone(), result]);
     let inverse = completed.right_inverse().unwrap();
 
     // Right inverse condition.
-    for i in 0..size(&inverse.shape, &[]).unwrap() {
-        let r = inverse.call(&ht!(i)).unwrap();
+    for i in 0..inverse.shape.size() {
+        let r = inverse.eval(&ht!(i)).unwrap();
         assert_eq!(
-            inverse
-                .call(&crd(&completed.call(&crd(&r)).unwrap()))
-                .unwrap(),
+            inverse.eval(&crd(&completed.eval(&crd(&r)).unwrap())).unwrap(),
             r,
             "right inverse: {completed} => {inverse} at {i}"
         );
@@ -114,12 +100,10 @@ fn postcondition_complement_strong(source: &Layout) {
 
     // Left inverse condition — the right inverse is a generalized
     // reflexive inverse.
-    for i in 0..size(&completed.shape, &[]).unwrap() {
-        let c = completed.call(&ht!(i)).unwrap();
+    for i in 0..completed.shape.size() {
+        let c = completed.eval(&ht!(i)).unwrap();
         assert_eq!(
-            completed
-                .call(&crd(&inverse.call(&crd(&c)).unwrap()))
-                .unwrap(),
+            completed.eval(&crd(&inverse.eval(&crd(&c)).unwrap())).unwrap(),
             c,
             "reflexive: {completed} => {inverse} at {i}"
         );
@@ -171,34 +155,22 @@ fn complement_completes_a_layout_with_gaps() {
 
 #[test]
 fn complement_completes_a_coordinate_codomain() {
-    postcondition_complement_strong(&strided(ht!(3), s(e!(0))));
-    postcondition_complement_strong(&strided(ht!(3), s(scaled_basis(4, &[2]))));
+    postcondition_complement_strong(&strided(ht!(3), &s(e!(0))));
+    postcondition_complement_strong(&strided(ht!(3), &s(scaled_basis(4, &[2]))));
     postcondition_complement_strong(&strided(
         ht!((2, 5, 3)),
-        t(vec![
-            s(scaled_basis(4, &[1])),
-            s(scaled_basis(5, &[0])),
-            s(scaled_basis(16, &[1])),
-        ]),
+        &t(vec![s(scaled_basis(4, &[1])), s(scaled_basis(5, &[0])), s(scaled_basis(16, &[1]))]),
     ));
     postcondition_complement_strong(&strided(
         ht!((2, 3, 5)),
-        t(vec![
-            s(scaled_basis(4, &[1])),
-            s(scaled_basis(5, &[0])),
-            s(scaled_basis(7, &[2, 1])),
-        ]),
+        &t(vec![s(scaled_basis(4, &[1])), s(scaled_basis(5, &[0])), s(scaled_basis(7, &[2, 1]))]),
     ));
     // A stride of integer 0 sits beside two basis strides. This case
     // caught the inverses projecting their accumulators ahead of the
     // stride-0 guard.
     postcondition_complement_strong(&strided(
         ht!((2, 3, 5)),
-        t(vec![
-            s(scaled_basis(4, &[1])),
-            s(StrideScalar::Int(0)),
-            s(scaled_basis(7, &[2, 1])),
-        ]),
+        &t(vec![s(scaled_basis(4, &[1])), s(StrideScalar::Int(0)), s(scaled_basis(7, &[2, 1]))]),
     ));
 }
 
@@ -209,15 +181,12 @@ fn complement_completes_a_coordinate_codomain() {
 fn complement_agrees_under_substitution() {
     for n in [1, 2, 3, 5] {
         assert_eq!(
-            layout(ht!((4, n)), ht!((1, 4))).complement(None).unwrap(),
+            layout(ht!((4, n)), ht!((1, 4))).complement().unwrap(),
             layout(ht!(1), ht!(4 * n))
         );
+        assert_eq!(layout(ht!(n), ht!(1)).complement().unwrap(), layout(ht!(1), ht!(n)));
         assert_eq!(
-            layout(ht!(n), ht!(1)).complement(None).unwrap(),
-            layout(ht!(1), ht!(n))
-        );
-        assert_eq!(
-            layout(ht!((n, 4)), ht!((1, n))).complement(None).unwrap(),
+            layout(ht!((n, 4)), ht!((1, n))).complement().unwrap(),
             layout(ht!(1), ht!(4 * n))
         );
         postcondition_complement(&layout(ht!((4, n)), ht!((1, 4))));
@@ -237,22 +206,15 @@ fn complement_agrees_under_substitution() {
 #[test]
 fn complement_extends_to_cover_a_shape() {
     assert_eq!(
-        layout(ht!(256), ht!(1))
-            .complement(Some(&ht!((32, 4, 2, 2, 3))))
-            .unwrap(),
+        layout(ht!(256), ht!(1)).complement_to(&ht!((32, 4, 2, 2, 3))).unwrap(),
         layout(ht!(6), ht!(256))
     );
     // `complement(Layout(4, 2)) == Layout((2, 1), (1, 8))`: the extend
     // grows that trailing `1` until the result spans the given shape.
     assert_eq!(
-        layout(ht!(4), ht!(2)).complement(Some(&ht!((64)))).unwrap(),
+        layout(ht!(4), ht!(2)).complement_to(&ht!((64))).unwrap(),
         layout(ht!((2, 8)), ht!((1, 8)))
     );
     // An extend the complement already covers leaves only the gap mode.
-    assert_eq!(
-        layout(ht!(4), ht!(2))
-            .complement(Some(&ht!((2, 3))))
-            .unwrap(),
-        layout(ht!(2), ht!(1))
-    );
+    assert_eq!(layout(ht!(4), ht!(2)).complement_to(&ht!((2, 3))).unwrap(), layout(ht!(2), ht!(1)));
 }

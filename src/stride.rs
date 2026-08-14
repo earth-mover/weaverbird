@@ -1,142 +1,111 @@
-//! Functions for CuTe strides. Mirrors `pycute/stride.py`.
+//! Strides: the map half of a layout.
 //!
 //! A stride is congruent with a shape and holds a [`StrideScalar`] at
-//! every leaf. The functions here read a stride, pair it with a shape,
-//! and fold adjacent modes together.
-//!
-//! PyCuTe dispatches on attributes: `stride` looks for `.stride`, and
-//! `coshape` for `._coshape`. Rust has traits, so the second becomes
-//! [`Coshape`], which [`Layout`](crate::Layout) implements. The first
-//! needs no trait: a caller holding a layout reads its `stride` field.
+//! every leaf. The methods here pair a stride with a shape, and the free
+//! function folds adjacent modes together.
 
 use crate::{
     atuple::StrideScalar,
     error::{Error, Result},
-    htuple::{HTuple, zip_transform_leaf},
+    htuple::HTuple,
     typedefs::{Int, IntTuple, Stride},
 };
 
-/// The sub-stride at `mode`. An empty mode returns the whole stride.
+/// An integer tuple read as a stride, one [`StrideScalar::Int`] per leaf.
 ///
-/// PyCuTe's `stride`, minus the duck-typed dispatch. A caller with a
-/// [`Layout`](crate::Layout) reads its `stride` field first.
+/// The depth-0 case of the stride algebra: every integer stride is an
+/// arithmetic-tuple stride whose leaves happen to carry no basis.
 ///
-/// Returns [`Error::BadPath`] when `mode` does not address `obj`.
-pub fn stride<'a>(obj: &'a Stride, mode: &[usize]) -> Result<&'a Stride> {
-    obj.get(mode).ok_or_else(|| Error::BadPath {
-        path: mode.to_vec(),
-        value: format!("{obj:?}"),
-    })
-}
-
-/// Sum of the leaf-wise products of two congruent [`HTuple`]s:
-/// `sum(x*y)`.
-///
-/// Pre-conditions:
-///   congruent(a, b)
-///
-/// Examples:
-/// ```text
-/// inner_product((1, 0, 1),    (1, 3, 6))       == 7
-/// inner_product((2, 3),       (1, 4))          == 14
-/// inner_product((1, (2, 3)),  (1, (10, 100)))  == 321
 /// ```
-///
-/// Returns [`Error::BadPath`] when the two profiles differ, and
-/// [`Error::Incompatible`] when the products do not sum.
-pub fn inner_product(a: &IntTuple, b: &Stride) -> Result<StrideScalar> {
-    zip_transform_leaf(&|x: &Int, y: &StrideScalar| y.scale(*x), a, b)?
-        .leaves()
-        .into_iter()
-        .try_fold(StrideScalar::Int(0), |sum, term| sum.add(term))
-}
-
-/// Exclusive prefix product of the leaves of `a`, congruent with `a`.
-///
-/// `init` seeds the running product and may be:
-///   -- a stride scalar (e.g. the default `1`), or
-///   -- a tuple of stride scalars weakly congruent with `a`;
-///      each mode is prefix-producted independently.
-///
-/// Pre-conditions:
-///   weakly_congruent(init, a)
-///
-/// Examples:
-/// ```text
-/// prefix_product((3, 2, 4))           == (1, 3, 6)
-/// prefix_product((3, (2, 4)))         == (1, (3, 6))
-/// prefix_product((4, 8), 2)           == (2, 8)               # base 2
-/// prefix_product(((2, 3), (4, 5)), (1, 100)) == ((1, 2), (100, 400))   # per-mode base
+/// # use weaverbird::{ht, stride, Stride};
+/// assert_eq!(Stride::from(ht!((8, 1))), stride!((8, 1)));
 /// ```
-///
-/// Returns [`Error::Incompatible`] when `init` does not weakly coarsen
-/// `a`.
-pub fn prefix_product(a: &IntTuple, init: &Stride) -> Result<Stride> {
-    let incompatible = || Error::Incompatible {
-        lhs: format!("{a:?}"),
-        rhs: format!("{init:?}"),
-    };
-    match (init, a) {
-        (HTuple::Leaf(seed), _) => {
-            // One running product per leaf, each emitted before it takes
-            // that leaf in, so the fold stays exclusive.
-            let mut running = a
-                .leaves()
-                .into_iter()
-                .scan(seed.clone(), |product, v| {
-                    let current = product.clone();
-                    *product = product.scale(*v);
-                    Some(current)
-                })
-                .collect::<Vec<_>>()
-                .into_iter();
-            // One value per leaf, so this cannot run dry.
-            HTuple::unflatten(&mut running, a).ok_or_else(incompatible)
-        }
-        (HTuple::Tuple(seeds), HTuple::Tuple(modes)) if seeds.len() == modes.len() => modes
-            .iter()
-            .zip(seeds)
-            .map(|(x, i)| prefix_product(x, i))
-            .collect::<Result<Vec<_>>>()
-            .map(HTuple::Tuple),
-        _ => Err(incompatible()),
+impl From<IntTuple> for Stride {
+    fn from(t: IntTuple) -> Self {
+        t.transform_leaf(&|v: &Int| StrideScalar::Int(*v))
     }
 }
 
-/// A type that knows the shape of its own codomain.
-///
-/// PyCuTe asks `hasattr(obj, '_coshape')`; this is that question, asked
-/// at compile time.
-pub trait Coshape {
-    /// Shape of the codomain. PyCuTe's `_coshape`.
+impl IntTuple {
+    /// Sum of the leaf-wise products of a shape and a stride: `sum(x*y)`.
     ///
-    /// Fallible, because the coshape of a `Layout` is an inner product
-    /// of its shape and its stride: an incongruent pair, or a stride
-    /// that mixes an integer with a basis element, has none. PyCuTe
-    /// raises in both cases.
-    fn coshape(&self) -> Result<IntTuple>;
+    /// ```
+    /// # use weaverbird::{ht, stride, HTuple, StrideScalar};
+    /// let dot = ht!((1, 0, 1)).inner_product(&stride!((1, 3, 6))).unwrap();
+    /// assert_eq!(dot, StrideScalar::Int(7));
+    /// ```
+    ///
+    /// Returns [`Error::BadPath`] when the two profiles differ, and
+    /// [`Error::Incompatible`] when the products do not sum.
+    pub fn inner_product(&self, stride: &Stride) -> Result<StrideScalar> {
+        self.zip_transform(stride, &|x: &Int, y: &StrideScalar| y.scale(*x))?
+            .leaves()
+            .try_fold(StrideScalar::Int(0), |sum, term| sum.add(term))
+    }
+
+    /// Exclusive prefix product of the extents, congruent with the shape.
+    ///
+    /// `init` seeds the running product. It is a stride scalar, or a
+    /// tuple of them that weakly coarsens the shape; each mode then runs
+    /// its own product.
+    ///
+    /// ```
+    /// # use weaverbird::{ht, stride, HTuple, StrideScalar};
+    /// assert_eq!(ht!((3, 2, 4)).prefix_product(&stride!(1)).unwrap(), stride!((1, 3, 6)));
+    /// assert_eq!(ht!((4, 8)).prefix_product(&stride!(2)).unwrap(), stride!((2, 8)));
+    /// ```
+    ///
+    /// Returns [`Error::Incompatible`] when `init` does not weakly
+    /// coarsen the shape.
+    pub fn prefix_product(&self, init: &Stride) -> Result<Stride> {
+        let incompatible = || Error::BadBase { shape: self.clone(), base: init.clone() };
+        match (init, self) {
+            (HTuple::Leaf(seed), _) => {
+                // One running product per leaf, each emitted before it
+                // takes that leaf in, so the fold stays exclusive.
+                let mut running = self
+                    .leaves()
+                    .scan(seed.clone(), |product, v| {
+                        let current = product.clone();
+                        *product = product.scale(*v);
+                        Some(current)
+                    })
+                    .collect::<Vec<_>>()
+                    .into_iter();
+                // One value per leaf, so this cannot run dry.
+                HTuple::unflatten(&mut running, self).ok_or_else(incompatible)
+            }
+            (HTuple::Tuple(seeds), HTuple::Tuple(modes)) if seeds.len() == modes.len() => {
+                modes.iter().zip(seeds).map(|(mode, seed)| mode.prefix_product(seed)).collect()
+            }
+            _ => Err(incompatible()),
+        }
+    }
+
+    /// The compact, column-major stride of this shape: the prefix product
+    /// from a base of one.
+    pub fn compact_stride(&self) -> Stride {
+        self.compact_stride_from(&mut 1)
+    }
+
+    /// The compact stride, with `base` as the running product. `base`
+    /// leaves the call holding the size of this shape.
+    pub(crate) fn compact_stride_from(&self, base: &mut Int) -> Stride {
+        match self {
+            HTuple::Leaf(extent) => {
+                let current = *base;
+                *base *= extent;
+                HTuple::Leaf(StrideScalar::Int(current))
+            }
+            HTuple::Tuple(modes) => {
+                modes.iter().map(|mode| mode.compact_stride_from(base)).collect()
+            }
+        }
+    }
 }
 
-/// Shape of the codomain.
-///
-/// Returns [`Error::BadPath`] when `mode` does not address the coshape.
-pub fn coshape<T: Coshape>(obj: &T, mode: &[usize]) -> Result<IntTuple> {
-    let value = obj.coshape()?;
-    value.get(mode).cloned().ok_or_else(|| Error::BadPath {
-        path: mode.to_vec(),
-        value: format!("{value:?}"),
-    })
-}
-
-/// Profile of the codomain.
-///
-/// Returns [`Error::BadPath`] when `mode` does not address the coshape.
-pub fn coprofile<T: Coshape>(obj: &T, mode: &[usize]) -> Result<IntTuple> {
-    coshape(obj, mode)
-}
-
-/// The coalesced equivalent of `shape` and `stride`. This is the
-/// size-1-preserving ("_z") core fold.
+/// The coalesced equivalent of `shape` and `stride`, keeping size-1
+/// modes.
 ///
 /// A merge of two adjacent modes must preserve the layout's evaluation.
 /// Two O(1) checks decide it, and they are jointly necessary and
@@ -145,16 +114,10 @@ pub fn coprofile<T: Coshape>(obj: &T, mode: &[usize]) -> Result<IntTuple> {
 ///   1. `s_a*d_a == d_b`                       (linearity at `(0, 1)`)
 ///   2. `(s_a-1)*d_a + d_b == (2*s_a-1)*d_a`   (linearity at `(s_a-1, 1)`)
 ///
-/// PyCuTe guards the merge with `is_static(s_a) == is_static(s_b)`, so
-/// that a concrete shape never folds into a symbolic one. [`Int`] is
-/// always concrete, so the crate omits that guard.
-///
 /// Pre-conditions:
 ///   congruent(shape, stride)
-///
-/// PyCuTe's `_coalesce_z`, the stride-level half of `coalesce_z`.
-pub fn coalesce_z(shape: &IntTuple, stride: &Stride) -> Result<(IntTuple, Stride)> {
-    let (result_s, result_d) = shape.leaves().into_iter().zip(stride.leaves()).try_fold(
+pub(crate) fn coalesce_modes(shape: &IntTuple, stride: &Stride) -> Result<(IntTuple, Stride)> {
+    let (result_s, result_d) = shape.leaves().zip(stride.leaves()).try_fold(
         (Vec::new(), Vec::new()),
         |(mut result_s, mut result_d): (Vec<Int>, Vec<StrideScalar>), (&s_b, d_b)| {
             // Drop trailing size-1 modes.
@@ -179,21 +142,22 @@ pub fn coalesce_z(shape: &IntTuple, stride: &Stride) -> Result<(IntTuple, Stride
         },
     )?;
     Ok((
-        HTuple::Tuple(result_s.into_iter().map(HTuple::Leaf).collect()),
-        HTuple::Tuple(result_d.into_iter().map(HTuple::Leaf).collect()),
+        result_s.into_iter().map(HTuple::Leaf).collect(),
+        result_d.into_iter().map(HTuple::Leaf).collect(),
     ))
 }
 
-/// The two linearity checks of [`coalesce_z`], in order. The second is
-/// reached only once the first holds, which is what keeps its sum
-/// well-typed: `d_b` then agrees with a multiple of `d_a`, so the two
-/// sit at the same rank.
+/// The two linearity checks of [`coalesce_modes`], in order. The second
+/// runs only once the first holds, which is what keeps its sum
+/// well-typed: `d_b` then agrees with a multiple of `d_a`, so the two sit
+/// at the same rank.
 fn mergeable(s_a: Int, d_a: &StrideScalar, d_b: &StrideScalar) -> Result<bool> {
     match d_a.scale(s_a) == *d_b {
         false => Ok(false),
-        true => d_a
-            .scale(s_a - 1)
-            .add(d_b)
-            .map(|sum| sum == d_a.scale(2 * s_a - 1)),
+        true => d_a.scale(s_a - 1).add(d_b).map(|sum| sum == d_a.scale(2 * s_a - 1)),
     }
 }
+
+#[cfg(test)]
+#[path = "tests/stride.rs"]
+mod tests;

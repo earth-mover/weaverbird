@@ -13,39 +13,28 @@
 //! argument, and a layout operand arrives as `&layout.shape`.
 #![expect(clippy::unwrap_used, reason = "a test asserts the happy path")]
 
-use pinstripe::{
-    HTuple, Int, IntTuple, Layout, OptTiler, Stride, StrideScalar, Tiler, TilerLeaf, depth,
-    greatest_common_domain, ht, size, tiler_to_layout,
-};
+use weaverbird::{HTuple, Int, IntTuple, Layout, Stride, Tiler, greatest_common_domain, ht};
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// The integer tuple as a stride, so the ported cases read like their
-/// Python source.
-fn as_stride(t: &IntTuple) -> Stride {
-    t.transform_leaf(&|v: &Int| StrideScalar::Int(*v))
-}
-
 /// `Layout(shape, stride)` over integer strides.
 fn layout(shape: IntTuple, stride: IntTuple) -> Layout {
-    Layout::new(shape, &as_stride(&stride)).unwrap()
-}
-
-/// A layout as the right-hand side of a composition.
-fn tiler(x: &Layout) -> OptTiler {
-    HTuple::Leaf(Some(TilerLeaf::Layout(x.clone())))
+    Layout::from_base(shape, &Stride::from(stride)).unwrap()
 }
 
 /// The tiler of a plain shape.
 fn int_tiler(shape: &IntTuple) -> Tiler {
-    shape.transform_leaf(&|v: &Int| TilerLeaf::Int(*v))
+    match shape {
+        HTuple::Leaf(v) => Tiler::Extent(*v),
+        HTuple::Tuple(modes) => Tiler::ByMode(modes.iter().map(int_tiler).collect()),
+    }
 }
 
 /// The domain size of a shape.
 fn extent(shape: &IntTuple) -> Int {
-    size(shape, &[]).unwrap()
+    shape.size()
 }
 
 /// The greatest common divisor, as the Python cases call `math.gcd`.
@@ -62,7 +51,7 @@ fn postcondition(a: &IntTuple, b: &IntTuple) -> Layout {
     let result = greatest_common_domain(a, b);
 
     // The result is flat.
-    assert_eq!(depth(&result.shape, &[]).unwrap(), 1, "flat: {result}");
+    assert_eq!(result.shape.depth(), 1, "flat: {result}");
 
     // Its size divides both operands, and their gcd.
     let n = extent(&result.shape);
@@ -73,20 +62,13 @@ fn postcondition(a: &IntTuple, b: &IntTuple) -> Layout {
     // It divides both operands: each admits a composition with it.
     for operand in [a, b] {
         assert!(
-            tiler_to_layout(&int_tiler(operand), &StrideScalar::Int(1))
-                .unwrap()
-                .composition(&tiler(&result))
-                .is_ok(),
+            int_tiler(operand).to_layout().unwrap().compose(&result).is_ok(),
             "{result} does not divide {operand:?}"
         );
     }
 
     // Symmetric in the two operands.
-    assert_eq!(
-        greatest_common_domain(b, a),
-        result,
-        "asymmetric: gcd({a:?}, {b:?})"
-    );
+    assert_eq!(greatest_common_domain(b, a), result, "asymmetric: gcd({a:?}, {b:?})");
 
     result
 }
@@ -128,43 +110,15 @@ fn known_expected_results() {
     let expected = vec![
         (ht!(1), ht!(1), layout(ht!((1)), ht!((0)))),
         (ht!(10), ht!(10), layout(ht!((10)), ht!((1)))),
-        (
-            ht!((16, 3)),
-            ht!((16, 3)),
-            layout(ht!((16, 3)), ht!((1, 16))),
-        ),
+        (ht!((16, 3)), ht!((16, 3)), layout(ht!((16, 3)), ht!((1, 16)))),
         (ht!((5, 2)), ht!(10), layout(ht!((5, 2)), ht!((1, 5)))),
-        (
-            ht!((5, 3, 4)),
-            ht!((10, 6)),
-            layout(ht!((5, 2)), ht!((1, 30))),
-        ),
-        (
-            ht!((5, 3, 3, 4)),
-            ht!((10, 6, 3)),
-            layout(ht!((5)), ht!((1))),
-        ),
-        (
-            ht!((1, 5, 3, 3, 4)),
-            ht!((10, 6, 3)),
-            layout(ht!((5)), ht!((1))),
-        ),
-        (
-            ht!((5, 3, 3, 4)),
-            ht!((10, 6, 1, 3)),
-            layout(ht!((5)), ht!((1))),
-        ),
+        (ht!((5, 3, 4)), ht!((10, 6)), layout(ht!((5, 2)), ht!((1, 30)))),
+        (ht!((5, 3, 3, 4)), ht!((10, 6, 3)), layout(ht!((5)), ht!((1)))),
+        (ht!((1, 5, 3, 3, 4)), ht!((10, 6, 3)), layout(ht!((5)), ht!((1)))),
+        (ht!((5, 3, 3, 4)), ht!((10, 6, 1, 3)), layout(ht!((5)), ht!((1)))),
         (ht!((2, 21)), ht!((3, 14)), layout(ht!((7)), ht!((6)))),
-        (
-            ht!((6, 35)),
-            ht!((15, 14)),
-            layout(ht!((3, 7)), ht!((1, 30))),
-        ),
-        (
-            ht!((16, 64)),
-            ht!((4, 16, 16)),
-            layout(ht!((4, 4, 4, 16)), ht!((1, 4, 16, 64))),
-        ),
+        (ht!((6, 35)), ht!((15, 14)), layout(ht!((3, 7)), ht!((1, 30)))),
+        (ht!((16, 64)), ht!((4, 16, 16)), layout(ht!((4, 4, 4, 16)), ht!((1, 4, 16, 64)))),
         (ht!((5, 3)), ht!((3, 5)), layout(ht!((1)), ht!((0)))),
         (ht!((5, 5, 3)), ht!((5, 3, 5)), layout(ht!((5)), ht!((1)))),
         (
@@ -192,14 +146,8 @@ fn known_expected_results() {
 fn coprime_leaves_yield_singleton() {
     // Order-aligned but pairwise coprime leaves yield the trivial
     // singleton.
-    assert_eq!(
-        postcondition(&ht!((5, 3)), &ht!((3, 5))),
-        layout(ht!((1)), ht!((0)))
-    );
-    assert_eq!(
-        postcondition(&ht!((7, 11)), &ht!((11, 7))),
-        layout(ht!((1)), ht!((0)))
-    );
+    assert_eq!(postcondition(&ht!((5, 3)), &ht!((3, 5))), layout(ht!((1)), ht!((0))));
+    assert_eq!(postcondition(&ht!((7, 11)), &ht!((11, 7))), layout(ht!((1)), ht!((0))));
 }
 
 #[test]

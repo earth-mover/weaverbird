@@ -1,5 +1,5 @@
-pinstripe
-Copyright 2026 the pinstripe authors
+weaverbird
+Copyright 2026 the weaverbird authors
 
 This product includes software derived from PyCuTe:
 
@@ -7,7 +7,7 @@ This product includes software derived from PyCuTe:
     All rights reserved.
     SPDX-License-Identifier: Apache-2.0
 
-pinstripe transliterates the PyCuTe modules into Rust. It keeps the
+weaverbird transliterates the PyCuTe modules into Rust. It keeps the
 same module split, the same function names, and the same algorithms.
 Its test suite is a port of the PyCuTe test suite.
 

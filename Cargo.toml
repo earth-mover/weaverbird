@@ -1,0 +1,27 @@
+[package]
+name = "pinstripe"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "A Rust transliteration of the CuTe layout algebra"
+readme = "README.md"
+keywords = ["layout", "tensor", "cute", "stride", "tiling"]
+categories = ["data-structures", "mathematics"]
+# Not published yet.
+publish = false
+
+[dependencies]
+thiserror = "2"
+
+[lints.rust]
+unsafe_code = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+elided_lifetimes_in_paths = "warn"
+
+[lints.clippy]
+expect_used = "warn"
+panic = "warn"
+unwrap_used = "warn"
+allow_attributes = "warn"
+todo = "warn"

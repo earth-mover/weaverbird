@@ -1,0 +1,27 @@
+//! The crate's error type. PyCuTe raises `ValueError` and `TypeError`;
+//! each raise becomes a variant here.
+
+/// What went wrong.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum Error {
+    /// A sum mixed an [`ArithTuple`](crate::ArithTuple) with a non-zero
+    /// integer. The two live at different ranks, so the sum has no value.
+    #[error("arithmetic tuple incompatibility: {lhs} + {rhs}")]
+    Incompatible { lhs: String, rhs: String },
+
+    /// An operation needed a single scaled basis vector and got a sum of
+    /// several.
+    #[error("{value} is not a basis element")]
+    NotBasis { value: String },
+
+    /// A path ran past a leaf, or off the end of a tuple.
+    #[error("path {path:?} does not address {value}")]
+    BadPath { path: Vec<usize>, value: String },
+
+    /// A range ran backwards.
+    #[error("range [{begin}, {end}) is reversed")]
+    ReversedRange { begin: usize, end: usize },
+}
+
+/// The crate's result alias.
+pub type Result<T> = std::result::Result<T, Error>;

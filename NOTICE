@@ -1,0 +1,16 @@
+pinstripe
+Copyright 2026 the pinstripe authors
+
+This product includes software derived from PyCuTe:
+
+    Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
+    All rights reserved.
+    SPDX-License-Identifier: Apache-2.0
+
+pinstripe transliterates the PyCuTe modules into Rust. It keeps the
+same module split, the same function names, and the same algorithms.
+Its test suite is a port of the PyCuTe test suite.
+
+CuTe and CUTLASS are names of NVIDIA Corporation. This project is not
+affiliated with, endorsed by, or sponsored by NVIDIA Corporation. It
+uses those names only to state what it is a port of.

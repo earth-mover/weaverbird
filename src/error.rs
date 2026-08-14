@@ -14,9 +14,8 @@ pub enum Error {
     #[error("{value} is not a basis element")]
     NotBasis { value: String },
 
-    /// A layout sends two coordinates to one codomain value, and the
-    /// operation needs it not to. PyCuTe's "Non-injective layout"
-    /// failures.
+    /// A layout that had to be injective sends two coordinates to one
+    /// codomain value. PyCuTe's "Non-injective layout" failures.
     #[error("non-injective layout: {detail}")]
     NonInjective { detail: String },
 
@@ -33,8 +32,8 @@ pub enum Error {
     #[error("no common refinement for {lhs} and {rhs}")]
     NoRefinement { lhs: String, rhs: String },
 
-    /// Two shapes have no common coarsening. The sizes differ, and the
-    /// integer size is the last resort.
+    /// Two shapes have no common coarsening, because their sizes differ.
+    /// Equal sizes always meet: the integer size is the last resort.
     #[error("no common coarsening for {lhs} and {rhs}")]
     NoCoarsening { lhs: String, rhs: String },
 
@@ -53,7 +52,7 @@ pub enum Error {
     NotCongruent { lhs: String, rhs: String },
 
     /// A product needed one integer operand and got two arithmetic
-    /// tuples. Their product leaves the module.
+    /// tuples. `Z^S` is closed under scaling, not under multiplication.
     #[error("no product for {lhs} * {rhs}")]
     NoProduct { lhs: String, rhs: String },
 

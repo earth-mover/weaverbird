@@ -6,8 +6,8 @@
 //!
 //! It is the second thing a layout may hold at a stride leaf. An integer
 //! stride sends a coordinate to an offset. A basis stride sends the same
-//! coordinate to a coordinate, because the sum lands in a different
-//! module. That is what makes an identity tensor an identity.
+//! coordinate to a coordinate, because the sum lands in `Z^S` and not in
+//! `Z`. That is what makes an identity tensor an identity.
 //!
 //! # Representation
 //!

@@ -6,8 +6,8 @@
 //!
 //! PyCuTe dispatches on attributes: `stride` looks for `.stride`, and
 //! `coshape` for `._coshape`. Rust has traits, so the second becomes
-//! [`Coshape`]. The first needs no trait yet — until `Layout` lands, the
-//! only thing that has a stride is a stride.
+//! [`Coshape`], which [`Layout`](crate::Layout) implements. The first
+//! needs no trait: a caller holding a layout reads its `stride` field.
 
 use crate::{
     atuple::StrideScalar,
@@ -18,8 +18,8 @@ use crate::{
 
 /// The sub-stride at `mode`. An empty mode returns the whole stride.
 ///
-/// PyCuTe's `stride`, minus the `Layout` / `Tensor` dispatch, which
-/// arrives with those types.
+/// PyCuTe's `stride`, minus the duck-typed dispatch. A caller with a
+/// [`Layout`](crate::Layout) reads its `stride` field first.
 ///
 /// Returns [`Error::BadPath`] when `mode` does not address `obj`.
 pub fn stride<'a>(obj: &'a Stride, mode: &[usize]) -> Result<&'a Stride> {
@@ -29,7 +29,8 @@ pub fn stride<'a>(obj: &'a Stride, mode: &[usize]) -> Result<&'a Stride> {
     })
 }
 
-/// Sum of the leaf-wise products of two congruent HTuples: `sum(x*y)`.
+/// Sum of the leaf-wise products of two congruent [`HTuple`]s:
+/// `sum(x*y)`.
 ///
 /// Pre-conditions:
 ///   congruent(a, b)
@@ -134,20 +135,19 @@ pub fn coprofile<T: Coshape>(obj: &T, mode: &[usize]) -> Result<IntTuple> {
     coshape(obj, mode)
 }
 
-/// Return a new shape and stride that are coalesced equivalents of the
-/// input. This is the size-1-preserving ("_z") core fold.
+/// The coalesced equivalent of `shape` and `stride`. This is the
+/// size-1-preserving ("_z") core fold.
 ///
-/// Two adjacent modes may be merged only when the merge preserves the
-/// layout's evaluation. The merge condition below verifies this with two
-/// O(1) checks that are jointly necessary and sufficient:
+/// A merge of two adjacent modes must preserve the layout's evaluation.
+/// Two O(1) checks decide it, and they are jointly necessary and
+/// sufficient:
 ///
 ///   1. `s_a*d_a == d_b`                       (linearity at `(0, 1)`)
 ///   2. `(s_a-1)*d_a + d_b == (2*s_a-1)*d_a`   (linearity at `(s_a-1, 1)`)
 ///
 /// PyCuTe guards the merge with `is_static(s_a) == is_static(s_b)`, so
 /// that a concrete shape never folds into a symbolic one. [`Int`] is
-/// always concrete, so the guard is always satisfied here and is left
-/// out.
+/// always concrete, so the crate omits that guard.
 ///
 /// Pre-conditions:
 ///   congruent(shape, stride)

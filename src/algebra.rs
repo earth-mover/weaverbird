@@ -5,7 +5,7 @@
 //! private method on its argument and promotes an int or a tuple through
 //! `tiler_to_layout`. Two of its functions carry an algorithm of their
 //! own — [`layout_add`] and [`greatest_common_domain`]; the rest are the
-//! wrappers below, each one [`dispatch`] followed by the [`Layout`]
+//! wrappers below, each one `dispatch` followed by the [`Layout`]
 //! method of the same name.
 
 use crate::{
@@ -69,7 +69,7 @@ fn as_tiler(a: &OptTiler) -> Result<Tiler> {
 /// Coalesces per `profile`, keeping size-1 modes. PyCuTe's `coalesce_z`.
 ///
 /// The facade over [`Layout::coalesce_z`]: it takes the looser argument
-/// [`dispatch`] reads, and answers `None` for an absent one. PyCuTe
+/// `dispatch` reads, and answers `None` for an absent one. PyCuTe
 /// defaults `profile` to `1`; Rust has no default argument, so every
 /// caller spells it out as `HTuple::Leaf(Some(1))`.
 ///
@@ -102,7 +102,7 @@ pub fn coalesce(a: &OptTiler, profile: &Profile) -> Result<Option<Layout>> {
 ///
 /// PyCuTe answers an absent `a` with `b` itself, which may be an integer
 /// or a tuple rather than a layout. The return type here is a layout, so
-/// that arm is `b` read through the same [`dispatch`] — `tiler_to_layout(b)`,
+/// that arm is `b` read through the same `dispatch` — `tiler_to_layout(b)`,
 /// which is what a caller would have had to do with PyCuTe's answer.
 ///
 /// ```text

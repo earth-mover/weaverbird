@@ -2,8 +2,8 @@
 //!
 //! A shape is an [`IntTuple`] of extents. PyCuTe reads a shape off any
 //! object that carries one, and falls back to the object itself; Rust
-//! has no such duck typing, so these functions take the [`IntTuple`].
-//! The `.shape` lookup arrives with `Layout`.
+//! has no such duck typing, so these functions take the [`IntTuple`]. A
+//! caller with a [`Layout`](crate::Layout) passes its `shape` field.
 //!
 //! PyCuTe's `@ModeOpDecorator` gives each accessor an optional mode
 //! path, so that `size[1](x)` reads mode 1. Here that is an explicit
@@ -150,10 +150,10 @@ pub fn common_coarsening(a: &IntTuple, b: &IntTuple) -> Result<IntTuple> {
 /// Maps any coordinate to a *natural* coordinate of `shape`. PyCuTe's
 /// `idx2crd`.
 ///
-/// The index is decomposed in colexicographical order, so the leftmost
-/// mode varies fastest. The final mode keeps the whole quotient — its
-/// `mod` is skipped — so an out-of-bounds index does not wrap; the
-/// excess accumulates in the last leaf.
+/// The decomposition is colexicographic, so the leftmost mode varies
+/// fastest. The final mode skips its `mod` and keeps the whole
+/// quotient. An out-of-bounds index therefore does not wrap; the excess
+/// accumulates in the last leaf.
 ///
 /// ```text
 /// idx2crd(7,  14)          == 7

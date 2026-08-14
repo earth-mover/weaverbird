@@ -37,6 +37,11 @@ pub enum Error {
     #[error("idx2crd({idx}, {shape})")]
     BadCoord { idx: String, shape: String },
 
+    /// Two layouts that had to span the same domain do not. The
+    /// pre-condition of [`layout_add`](crate::layout_add).
+    #[error("size mismatch between {lhs} and {rhs}")]
+    SizeMismatch { lhs: String, rhs: String },
+
     /// Two hierarchical tuples that had to share a profile do not.
     #[error("{lhs} and {rhs} are not congruent")]
     NotCongruent { lhs: String, rhs: String },

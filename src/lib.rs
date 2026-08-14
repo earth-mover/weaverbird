@@ -30,6 +30,7 @@
 //! helpers PyCuTe guards with it — the `_stride_key` sorts in `layout.py`
 //! — collapse to a plain sort.
 
+pub mod algebra;
 pub mod atuple;
 pub mod error;
 pub mod htuple;
@@ -38,6 +39,7 @@ pub mod shape;
 pub mod stride;
 pub mod typedefs;
 
+pub use algebra::{greatest_common_domain, layout_add};
 pub use atuple::{
     ArithTuple, StrideScalar, basis_repr, e, is_basis, make_basis_like, proj, proj_tuple,
     proj_tuple_mut, unit,

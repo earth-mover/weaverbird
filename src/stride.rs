@@ -108,14 +108,19 @@ pub fn prefix_product(a: &IntTuple, init: &Stride) -> Result<Stride> {
 /// at compile time.
 pub trait Coshape {
     /// Shape of the codomain. PyCuTe's `_coshape`.
-    fn coshape(&self) -> IntTuple;
+    ///
+    /// Fallible, because the coshape of a `Layout` is an inner product
+    /// of its shape and its stride: an incongruent pair, or a stride
+    /// that mixes an integer with a basis element, has none. PyCuTe
+    /// raises in both cases.
+    fn coshape(&self) -> Result<IntTuple>;
 }
 
 /// Shape of the codomain.
 ///
 /// Returns [`Error::BadPath`] when `mode` does not address the coshape.
 pub fn coshape<T: Coshape>(obj: &T, mode: &[usize]) -> Result<IntTuple> {
-    let value = obj.coshape();
+    let value = obj.coshape()?;
     value.get(mode).cloned().ok_or_else(|| Error::BadPath {
         path: mode.to_vec(),
         value: format!("{value:?}"),

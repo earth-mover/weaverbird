@@ -94,12 +94,12 @@ fn prefix_product_rejects_an_init_that_does_not_coarsen_the_shape() {
     assert!(prefix_product(&ht!(6), &as_stride(&ht!((1, 2)))).is_err());
 }
 
-/// A stand-in for the `Layout` that will implement [`Coshape`].
+/// A stand-in for the `Layout` that also implements [`Coshape`].
 struct Codomain(IntTuple);
 
 impl Coshape for Codomain {
-    fn coshape(&self) -> IntTuple {
-        self.0.clone()
+    fn coshape(&self) -> pinstripe::Result<IntTuple> {
+        Ok(self.0.clone())
     }
 }
 

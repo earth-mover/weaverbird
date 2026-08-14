@@ -1364,3 +1364,138 @@ fn top_level_leaves<T: Clone>(x: &HTuple<T>) -> Option<Vec<T>> {
 fn divmod(a: Int, b: Int) -> Option<(Int, Int)> {
     (b != 0).then(|| (a.div_euclid(b), a.rem_euclid(b)))
 }
+
+// ---------------------------------------------------------------------------
+// logical_divide and logical_product
+// ---------------------------------------------------------------------------
+
+impl Layout {
+    /// Splits this layout into the elements of `b` — the Tile — and a
+    /// grid over those tiles. PyCuTe's `Layout._logical_divide`.
+    ///
+    /// The Tile is `b` itself and the grid is [`Self::complement`] of `b`
+    /// extended over this layout's shape, so composing with the two of
+    /// them together re-reads the whole domain, tile first.
+    ///
+    /// The dispatch head is [`Self::composition`]'s: a tuple `b` divides
+    /// by-mode, an integer promotes to `N:1`, and an absent `b` is the
+    /// no-op. A tuple `b` therefore interleaves Tile and grid per mode —
+    /// the `(Tile, Grid)` regrouping is `zipped_divide`, which promotes
+    /// the tiler through [`tiler_to_layout`] first.
+    ///
+    /// Post-conditions, for a `b` that is a single layout:
+    ///   `rank(result) == 2`,
+    ///   `compatible(shape(b), shape(result[0]))`,
+    ///   `result(i, 0) == self(b(i))` for every `i` in the domain of `b`,
+    ///   every element of `self` appears in `result`.
+    ///
+    /// ```text
+    /// logical_divide(Layout(24), Layout(4, 2))          == Layout((4, (2, 3)), (2, (1, 8)))
+    /// logical_divide(Layout((6, 4), (4, 1)), Layout(2, 1)) == Layout((2, 3), (4, 8))
+    /// ```
+    ///
+    /// Returns [`Error::RankMismatch`] when a tiler tuple outranks this
+    /// layout, and whatever [`Self::complement`] or [`Self::composition`]
+    /// raise otherwise.
+    pub fn logical_divide(&self, b: &OptTiler) -> Result<Self> {
+        let b = match b {
+            // RHS None, noop.
+            HTuple::Leaf(None) => return Ok(self.clone()),
+            // RHS tuple, (A0,A1,...) / <X,Y,...> => (A0 / X, A1 / Y, ...).
+            HTuple::Tuple(modes) => {
+                if self.shape.rank() < modes.len() {
+                    return Err(Error::RankMismatch {
+                        op: "logical_divide",
+                        value: format!("{self}"),
+                        profile: format!("{b:?}"),
+                    });
+                }
+                // PyCuTe zips the layout against the tiler with
+                // `zip_longest`, so the modes the tiler runs out on take
+                // the no-op.
+                return (0..self.shape.rank())
+                    .map(|i| {
+                        self.index(i)?
+                            .logical_divide(modes.get(i).unwrap_or(&HTuple::Leaf(None)))
+                    })
+                    .collect::<Result<Vec<_>>>()
+                    .map(make_layout);
+            }
+            // RHS int, A / N -> A / N:1.
+            HTuple::Leaf(Some(TilerLeaf::Int(n))) => {
+                Layout::set(HTuple::Leaf(*n), HTuple::Leaf(StrideScalar::Int(1)))
+            }
+            HTuple::Leaf(Some(TilerLeaf::Layout(l))) => l.clone(),
+        };
+
+        // PyCuTe imports `complement` from `algebra` inside the function,
+        // to dodge a circular import. Here it is the method above.
+        let grid = b.complement(Some(&self.shape))?;
+        self.composition(&HTuple::Leaf(Some(TilerLeaf::Layout(make_layout(vec![
+            b, grid,
+        ])))))
+    }
+
+    /// Reproduces this layout over `b`. PyCuTe's
+    /// `Layout._logical_product`.
+    ///
+    /// Mode 0 of the result is this layout untouched, and mode 1 walks
+    /// `b` through the codomain this layout leaves free — its
+    /// [`Self::complement`] — so each coordinate of `b` places one
+    /// disjoint copy.
+    ///
+    /// The dispatch head is [`Self::composition`]'s: a tuple `b`
+    /// multiplies by-mode, an integer promotes to `N:1`, and an absent
+    /// `b` is the no-op.
+    ///
+    /// Post-conditions:
+    ///   `rank(result) == 2`,
+    ///   `result[0] == self`,
+    ///   `compatible(shape(b), shape(result[1]))`.
+    ///
+    /// ```text
+    /// logical_product(Layout(3, 1), Layout(4, 1))           == Layout((3, 4), (1, 3))
+    /// logical_product(Layout((2, 2), (4, 1)), Layout(6, 1)) == Layout(((2, 2), (2, 3)), ((4, 1), (2, 8)))
+    /// ```
+    ///
+    /// Returns [`Error::RankMismatch`] when a tiler tuple outranks this
+    /// layout, and whatever [`Self::complement`] or [`Self::composition`]
+    /// raise otherwise.
+    pub fn logical_product(&self, b: &OptTiler) -> Result<Self> {
+        let b = match b {
+            // RHS None, noop.
+            HTuple::Leaf(None) => return Ok(self.clone()),
+            // RHS tuple, (A0,A1,...) x <X,Y,...> => (A0 x X, A1 x Y, ...).
+            HTuple::Tuple(modes) => {
+                if self.shape.rank() < modes.len() {
+                    return Err(Error::RankMismatch {
+                        op: "logical_product",
+                        value: format!("{self}"),
+                        profile: format!("{b:?}"),
+                    });
+                }
+                // PyCuTe zips the layout against the tiler with
+                // `zip_longest`, so the modes the tiler runs out on take
+                // the no-op.
+                return (0..self.shape.rank())
+                    .map(|i| {
+                        self.index(i)?
+                            .logical_product(modes.get(i).unwrap_or(&HTuple::Leaf(None)))
+                    })
+                    .collect::<Result<Vec<_>>>()
+                    .map(make_layout);
+            }
+            // RHS int, A x N -> A x N:1.
+            HTuple::Leaf(Some(TilerLeaf::Int(n))) => {
+                Layout::set(HTuple::Leaf(*n), HTuple::Leaf(StrideScalar::Int(1)))
+            }
+            HTuple::Leaf(Some(TilerLeaf::Layout(l))) => l.clone(),
+        };
+
+        Ok(make_layout(vec![
+            self.clone(),
+            self.complement(None)?
+                .composition(&HTuple::Leaf(Some(TilerLeaf::Layout(b))))?,
+        ]))
+    }
+}

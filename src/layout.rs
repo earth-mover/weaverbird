@@ -921,14 +921,21 @@ impl Layout {
         // rewrites the accumulator at its own codomain position.
         for (de, s, pps) in modes {
             let d = proj(de, de)?;
+            // Stride-0 / size-1 modes carry no information.
+            //
+            // PyCuTe projects first and guards second. A stride of
+            // integer 0 is the rank-0 basis, whose path is empty, so its
+            // `proj` answers the whole accumulator tree and the mode is
+            // then skipped. `proj_leaf_mut` needs a leaf, so the guard
+            // comes first here. The projections have no side effect, so
+            // the order does not otherwise matter.
+            if d.is_zero() || s == 1 {
+                continue;
+            }
             let result_s = proj_leaf_mut(&mut result_shape, de)?;
             let result_d = proj_leaf_mut(&mut result_stride, de)?;
             let curr_d = proj_leaf_mut(&mut curr_stride, de)?;
 
-            // Stride-0 / size-1 modes carry no information.
-            if d.is_zero() || s == 1 {
-                continue;
-            }
             // A mode that does not continue the chain is dropped.
             if d != curr_d {
                 continue;
@@ -988,14 +995,16 @@ impl Layout {
 
         for (de, s, pps) in modes {
             let d = proj(de, de)?;
+            // Stride-0 / size-1 modes carry no information. The guard
+            // precedes the projections for the reason given in
+            // [`Self::right_inverse`].
+            if d.is_zero() || s == 1 {
+                continue;
+            }
             let result_s = proj_leaf_mut(&mut result_shape, de)?;
             let result_d = proj_leaf_mut(&mut result_stride, de)?;
             let curr_s = proj_leaf_mut(&mut curr_shape, de)?;
 
-            // Stride-0 / size-1 modes carry no information.
-            if d.is_zero() || s == 1 {
-                continue;
-            }
             // The chain is walked with integer arithmetic, so a stride
             // that projects to anything else has no place on it.
             let d = match d {

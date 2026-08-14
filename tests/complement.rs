@@ -189,13 +189,9 @@ fn complement_completes_a_coordinate_codomain() {
             s(scaled_basis(7, &[2, 1])),
         ]),
     ));
-    // FAILING. `Layout::right_inverse` rejects the completed layout with
-    // `BadPath { path: [] }`: an integer-0 stride is the rank-0 basis, and
-    // the loop projects the accumulator at its path before the
-    // stride-0 guard skips it. PyCuTe's `proj(x, 0)` is the identity, so
-    // the projection is harmless there and the mode is skipped. The fix
-    // is in `src/layout.rs`, not here — `right_inverse` and
-    // `left_inverse` both project ahead of the guard.
+    // A stride of integer 0 sits beside two basis strides. This case
+    // caught the inverses projecting their accumulators ahead of the
+    // stride-0 guard.
     postcondition_complement_strong(&strided(
         ht!((2, 3, 5)),
         t(vec![

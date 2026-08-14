@@ -393,6 +393,38 @@ pub fn proj<'a>(x: &'a StrideScalar, profile: &StrideScalar) -> Result<&'a Strid
     x.get(&basis_path(profile)?)
 }
 
+/// The part of a hierarchical tuple at the position `profile` names.
+///
+/// The same projection as [`proj`], over an [`HTuple`] carrier instead
+/// of a [`StrideScalar`] one. PyCuTe has one `proj`, because there `get`
+/// walks any value.
+///
+/// Returns [`Error::BadPath`] when the path runs off `x`.
+pub fn proj_tuple<'a, T>(x: &'a HTuple<T>, profile: &StrideScalar) -> Result<&'a HTuple<T>>
+where
+    T: Debug,
+{
+    let path = basis_path(profile)?;
+    x.get(&path).ok_or_else(|| Error::BadPath {
+        path,
+        value: format!("{x:?}"),
+    })
+}
+
+/// The part of a hierarchical tuple at the position `profile` names,
+/// for writing through. The mutable twin of [`proj_tuple`].
+pub fn proj_tuple_mut<'a, T>(
+    x: &'a mut HTuple<T>,
+    profile: &StrideScalar,
+) -> Result<&'a mut HTuple<T>>
+where
+    T: Debug,
+{
+    let path = basis_path(profile)?;
+    let value = format!("{x:?}");
+    x.get_mut(&path).ok_or(Error::BadPath { path, value })
+}
+
 /// The unit basis element at `profile`'s path. Ignores `profile`'s
 /// coefficient.
 pub fn unit(profile: &StrideScalar) -> Result<StrideScalar> {

@@ -67,6 +67,18 @@ impl<T> HTuple<T> {
         }
     }
 
+    /// The sub-tuple at `path`, for writing through.
+    /// The mutable twin of [`Self::get`].
+    pub fn get_mut(&mut self, path: &[usize]) -> Option<&mut HTuple<T>> {
+        match path.split_first() {
+            None => Some(self),
+            Some((&i, rest)) => match self {
+                HTuple::Tuple(modes) => modes.get_mut(i)?.get_mut(rest),
+                HTuple::Leaf(_) => None,
+            },
+        }
+    }
+
     /// Every leaf, in pre-order.
     pub fn leaves(&self) -> Vec<&T> {
         match self {
@@ -305,6 +317,245 @@ where
             value: format!("{a:?}"),
         }),
     }
+}
+
+/// Applies `f` to each triple of leaves and keeps the profile.
+///
+/// PyCuTe's `transform_leaf` at arity three. The leaf function is
+/// fallible here, because the layout functions that reach for this arity
+/// build a layout at each leaf.
+///
+/// Returns [`Error::BadPath`] when the three profiles differ.
+pub fn zip3_transform_leaf<A, B, C, U>(
+    f: &impl Fn(&A, &B, &C) -> Result<U>,
+    a: &HTuple<A>,
+    b: &HTuple<B>,
+    c: &HTuple<C>,
+) -> Result<HTuple<U>>
+where
+    A: Debug,
+{
+    match (a, b, c) {
+        (HTuple::Leaf(x), HTuple::Leaf(y), HTuple::Leaf(z)) => f(x, y, z).map(HTuple::Leaf),
+        (HTuple::Tuple(x), HTuple::Tuple(y), HTuple::Tuple(z))
+            if x.len() == y.len() && y.len() == z.len() =>
+        {
+            x.iter()
+                .zip(y)
+                .zip(z)
+                .map(|((i, j), k)| zip3_transform_leaf(f, i, j, k))
+                .collect::<Result<Vec<_>>>()
+                .map(HTuple::Tuple)
+        }
+        _ => Err(Error::BadPath {
+            path: vec![],
+            value: format!("{a:?}"),
+        }),
+    }
+}
+
+/// The `i`th child of an optional tuple, or `None` past the end.
+/// PyCuTe's `zip_longest` padding.
+fn child<T>(t: Option<&HTuple<T>>, i: usize) -> Option<&HTuple<T>> {
+    match t {
+        Some(HTuple::Tuple(modes)) => modes.get(i),
+        _ => None,
+    }
+}
+
+/// The rank a tuple contributes to a `zip_longest` width. An absent
+/// tuple contributes nothing.
+///
+/// A leaf has no children to zip, so it returns [`Error::BadPath`].
+/// PyCuTe raises there too — `zip_longest` reaches a non-iterable.
+fn zip_width<T>(t: Option<&HTuple<T>>) -> Result<usize>
+where
+    T: Debug,
+{
+    match t {
+        None => Ok(0),
+        Some(HTuple::Tuple(modes)) => Ok(modes.len()),
+        Some(leaf) => Err(Error::BadPath {
+            path: vec![],
+            value: format!("{leaf:?}"),
+        }),
+    }
+}
+
+/// Applies `f` at the leaves of `a` and combines each level with `g`.
+///
+/// PyCuTe's `transform_apply_leaf(g, f, htuple, *tuples)` with one extra
+/// tuple. `a` drives the recursion; the extra tuple is stepped in
+/// parallel and padded with `None`, as `zip_longest` pads. `f` therefore
+/// sees whatever stands opposite a leaf of `a` — a sub-tuple, or
+/// nothing.
+pub fn transform_apply_leaf<A, B, U>(
+    g: &impl Fn(Vec<U>) -> U,
+    f: &impl Fn(Option<&HTuple<A>>, Option<&HTuple<B>>) -> Result<U>,
+    a: Option<&HTuple<A>>,
+    b: Option<&HTuple<B>>,
+) -> Result<U>
+where
+    A: Debug,
+    B: Debug,
+{
+    match a {
+        Some(HTuple::Tuple(modes)) => (0..modes.len().max(zip_width(b)?))
+            .map(|i| transform_apply_leaf(g, f, child(a, i), child(b, i)))
+            .collect::<Result<Vec<_>>>()
+            .map(g),
+        _ => f(a, b),
+    }
+}
+
+/// [`transform_apply_leaf`] with two extra tuples.
+pub fn transform_apply_leaf2<A, B, C, U>(
+    g: &impl Fn(Vec<U>) -> U,
+    f: &impl Fn(Option<&HTuple<A>>, Option<&HTuple<B>>, Option<&HTuple<C>>) -> Result<U>,
+    a: Option<&HTuple<A>>,
+    b: Option<&HTuple<B>>,
+    c: Option<&HTuple<C>>,
+) -> Result<U>
+where
+    A: Debug,
+    B: Debug,
+    C: Debug,
+{
+    match a {
+        Some(HTuple::Tuple(modes)) => (0..modes.len().max(zip_width(b)?).max(zip_width(c)?))
+            .map(|i| transform_apply_leaf2(g, f, child(a, i), child(b, i), child(c, i)))
+            .collect::<Result<Vec<_>>>()
+            .map(g),
+        _ => f(a, b, c),
+    }
+}
+
+/// [`transform_apply_leaf`] with four extra tuples.
+pub fn transform_apply_leaf4<A, B, C, D, E, U>(
+    g: &impl Fn(Vec<U>) -> U,
+    f: &impl Fn(
+        Option<&HTuple<A>>,
+        Option<&HTuple<B>>,
+        Option<&HTuple<C>>,
+        Option<&HTuple<D>>,
+        Option<&HTuple<E>>,
+    ) -> Result<U>,
+    a: Option<&HTuple<A>>,
+    b: Option<&HTuple<B>>,
+    c: Option<&HTuple<C>>,
+    d: Option<&HTuple<D>>,
+    e: Option<&HTuple<E>>,
+) -> Result<U>
+where
+    A: Debug,
+    B: Debug,
+    C: Debug,
+    D: Debug,
+    E: Debug,
+{
+    match a {
+        Some(HTuple::Tuple(modes)) => (0..modes
+            .len()
+            .max(zip_width(b)?)
+            .max(zip_width(c)?)
+            .max(zip_width(d)?)
+            .max(zip_width(e)?))
+            .map(|i| {
+                transform_apply_leaf4(
+                    g,
+                    f,
+                    child(a, i),
+                    child(b, i),
+                    child(c, i),
+                    child(d, i),
+                    child(e, i),
+                )
+            })
+            .collect::<Result<Vec<_>>>()
+            .map(g),
+        _ => f(a, b, c, d, e),
+    }
+}
+
+/// Pairs each leaf of `a` with whatever stands opposite it in `b`, in
+/// pre-order. A leaf of `a` may face a whole sub-tuple of `b`.
+///
+/// PyCuTe's `zip_leaves` at arity two.
+///
+/// Returns [`Error::BadPath`] when `a` does not coarsen `b`.
+pub fn zip_leaves<'a, A, B>(
+    a: &'a HTuple<A>,
+    b: &'a HTuple<B>,
+) -> Result<Vec<(&'a A, &'a HTuple<B>)>>
+where
+    A: Debug,
+{
+    match (a, b) {
+        (HTuple::Leaf(x), _) => Ok(vec![(x, b)]),
+        (HTuple::Tuple(x), HTuple::Tuple(y)) if x.len() == y.len() => x
+            .iter()
+            .zip(y)
+            .map(|(i, j)| zip_leaves(i, j))
+            .collect::<Result<Vec<_>>>()
+            .map(|nested| nested.concat()),
+        _ => Err(Error::BadPath {
+            path: vec![],
+            value: format!("{a:?}"),
+        }),
+    }
+}
+
+/// Folds `f` over the pairs [`zip_leaves`] yields, left to right.
+/// PyCuTe's `fold_leaf` at arity two.
+pub fn fold_leaf<A, B, V>(
+    f: &impl Fn(V, &A, &HTuple<B>) -> V,
+    init: V,
+    a: &HTuple<A>,
+    b: &HTuple<B>,
+) -> Result<V>
+where
+    A: Debug,
+{
+    zip_leaves(a, b).map(|pairs| pairs.into_iter().fold(init, |acc, (x, y)| f(acc, x, y)))
+}
+
+/// The parts of `b` that `profile` leaves open, flattened one level.
+/// PyCuTe's `slice_`: a `None` leaf keeps its counterpart.
+///
+/// A coordinate marks the modes a slice retains this way, so `profile`
+/// is a tuple of optional values.
+pub fn slice_<P, T>(profile: &HTuple<Option<P>>, b: &HTuple<T>) -> Result<HTuple<T>>
+where
+    P: Debug,
+    T: Clone,
+{
+    zip_leaves(profile, b).map(|pairs| {
+        HTuple::Tuple(
+            pairs
+                .into_iter()
+                .filter(|(a, _)| a.is_none())
+                .map(|(_, x)| x.clone())
+                .collect(),
+        )
+    })
+}
+
+/// The parts of `b` that `profile` pins down, flattened one level.
+/// PyCuTe's `dice_`: the complement of [`slice_`].
+pub fn dice_<P, T>(profile: &HTuple<Option<P>>, b: &HTuple<T>) -> Result<HTuple<T>>
+where
+    P: Debug,
+    T: Clone,
+{
+    zip_leaves(profile, b).map(|pairs| {
+        HTuple::Tuple(
+            pairs
+                .into_iter()
+                .filter(|(a, _)| a.is_some())
+                .map(|(_, x)| x.clone())
+                .collect(),
+        )
+    })
 }
 
 /// Builds an [`HTuple`] from nested parentheses.

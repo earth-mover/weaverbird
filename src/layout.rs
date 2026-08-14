@@ -9,9 +9,14 @@
 //! its predicate are both absent: `Layout` *is* the answer to
 //! `is_layout`.
 //!
-//! The layout algebra — coalesce, composition, the inverses, complement,
-//! divide, product — lands in a later module. This one holds the type,
-//! its accessors, and the factories.
+//! The layout algebra lives here too, as it does in `layout.py`: the
+//! `_`-prefixed methods of PyCuTe's `Layout` are the implementations,
+//! and `algebra.rs` is the free-function facade over them. PyCuTe lets
+//! the two modules import each other — `_composition` reaches for
+//! `algebra.layout_add`, `_logical_divide` for `algebra.complement`.
+//! Rust modules cannot circle that way, so the algorithms all stay on
+//! this side and the dependency runs one way: `layout.rs → algebra.rs`,
+//! for `layout_add` and `greatest_common_domain` alone.
 
 use std::{
     cmp::Ordering,

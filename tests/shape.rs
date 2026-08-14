@@ -2,7 +2,7 @@
 //! the docstrings of `pycute/shape.py`.
 //!
 //! The cases that need `Layout` — `test_accepts_layouts` — wait for that
-//! module, as does anything reached through `crd2idx`.
+//! module.
 //!
 //! `test/test_typing.py` holds no shape assertions to port: it exercises
 //! Python's ABC registration, `typing.get_type_hints`, and module
@@ -10,7 +10,8 @@
 #![expect(clippy::unwrap_used, reason = "a test asserts the happy path")]
 
 use pinstripe::{
-    HTuple, IntTuple, common_coarsening, common_refinement, compatible, coordinates, depth, ht,
+    HTuple, IntTuple, common_coarsening, common_refinement, compatible, coordinates, crd2idx,
+    depth, ht,
     htuple::{congruent, weakly_congruent},
     idx2crd, rank, shape, size,
 };
@@ -465,6 +466,54 @@ fn coordinates_enumerates_colexicographically() {
             ht!((1, (1, 1))),
         ]
     );
+}
+
+#[test]
+fn crd2idx_recomposes_colexicographically() {
+    assert_eq!(crd2idx(&ht!((1, 0, 1)), &ht!((3, 2, 4))).unwrap(), 7.into());
+    assert_eq!(
+        crd2idx(&ht!((1, (0, 1))), &ht!((3, (2, 4)))).unwrap(),
+        7.into()
+    );
+}
+
+#[test]
+fn crd2idx_passes_an_integral_coordinate_through() {
+    assert_eq!(crd2idx(&ht!(7), &ht!((3, (2, 4)))).unwrap(), 7.into());
+}
+
+#[test]
+fn crd2idx_takes_a_flat_coordinate_of_a_nested_shape() {
+    // The leaf 5 stands for the sub-shape (2, 3), which contributes its
+    // size: 2 + 5 * 3 == 17.
+    assert_eq!(crd2idx(&ht!((2, 5)), &ht!((3, (2, 3)))).unwrap(), 17.into());
+}
+
+#[test]
+fn crd2idx_rejects_a_coordinate_that_does_not_coarsen_the_shape() {
+    assert!(crd2idx(&ht!((1, 2, 3)), &ht!((3, 2))).is_err());
+}
+
+#[test]
+fn crd2idx_inverts_idx2crd() {
+    for s in [ht!(6), ht!((3, 2)), ht!((2, (2, 2))), ht!(((3, 2), 4))] {
+        for i in 0..s.product() {
+            let crd = idx2crd(&HTuple::Leaf(i), &s).unwrap();
+            assert_eq!(crd2idx(&crd, &s).unwrap(), i.into());
+        }
+    }
+}
+
+#[test]
+fn crd2idx_walks_the_coordinates_in_order() {
+    for s in [ht!(6), ht!((3, 2)), ht!((2, (2, 2))), ht!(((3, 2), 4))] {
+        let walked = coordinates(&s)
+            .iter()
+            .map(|c| crd2idx(c, &s).unwrap())
+            .collect::<Vec<_>>();
+        let expected = (0..s.product()).map(Into::into).collect::<Vec<_>>();
+        assert_eq!(walked, expected);
+    }
 }
 
 #[test]

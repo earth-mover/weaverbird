@@ -44,8 +44,8 @@ pub use atuple::{
 pub use error::{Error, Result};
 pub use htuple::HTuple;
 pub use shape::{
-    common_coarsening, common_refinement, compatible, coordinates, depth, idx2crd, rank, shape,
-    size,
+    common_coarsening, common_refinement, compatible, coordinates, crd2idx, depth, idx2crd, rank,
+    shape, size,
 };
 // `coalesce_z` stays behind its module, as PyCuTe keeps `_coalesce_z`
 // private to `stride.py`; the exported `coalesce_z` is the `Layout` one.

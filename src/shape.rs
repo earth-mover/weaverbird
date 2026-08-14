@@ -9,14 +9,12 @@
 //! path, so that `size[1](x)` reads mode 1. Here that is an explicit
 //! `mode: &[usize]` argument, spelled the way [`HTuple::get`] spells it.
 //!
-//! `crd2idx` is absent. It is the `inner_product` of a `prefix_product`,
-//! and both of those live in `pycute/stride.py`, which is not ported
-//! yet.
-
 use crate::{
+    atuple::StrideScalar,
     error::{Error, Result},
-    htuple::HTuple,
-    typedefs::{Int, IntTuple},
+    htuple::{HTuple, transform_apply_leaf},
+    stride::{inner_product, prefix_product},
+    typedefs::{Int, IntTuple, Stride},
 };
 
 /// An object's shape. PyCuTe's `shape`.
@@ -201,6 +199,49 @@ pub fn idx2crd(idx: &IntTuple, shape: &IntTuple) -> Result<IntTuple> {
         }
         _ => Err(bad_coord()),
     }
+}
+
+/// Maps any coordinate of `shape` to an integral coordinate. PyCuTe's
+/// `crd2idx`.
+///
+/// The recomposition is colexicographic, so the leftmost mode varies
+/// fastest. It is the inverse of [`idx2crd`] on in-bounds input.
+///
+/// ```text
+/// crd2idx((1, 0, 1),   (3, 2, 4))   == 7
+/// crd2idx((1, (0, 1)), (3, (2, 4))) == 7
+/// crd2idx(7,           (3, (2, 4))) == 7   // integral, passes through
+/// crd2idx((2, 5),      (3, (2, 3))) == 17  // flat coord, nested shape
+/// ```
+///
+/// `crd` need only weakly coarsen `shape`: a leaf of `crd` may stand for
+/// a whole sub-tree of `shape`, and that sub-tree contributes its
+/// [`size`]. That is what admits the flat coordinate above.
+///
+/// PyCuTe types the result `Integer`. Here it is a [`StrideScalar`],
+/// which is what [`inner_product`] returns; the strides are the plain
+/// integers of a [`prefix_product`], so the value is always the
+/// [`StrideScalar::Int`] case.
+///
+/// Returns [`Error::BadCoord`] when `crd` does not coarsen `shape`.
+pub fn crd2idx(crd: &IntTuple, shape: &IntTuple) -> Result<StrideScalar> {
+    let bad_coord = || Error::BadCoord {
+        idx: format!("{crd:?}"),
+        shape: format!("{shape:?}"),
+    };
+    // One extent per leaf of `crd`: the size of the sub-shape that leaf
+    // stands for. PyCuTe writes it `transform_leaf(lambda c,s: size(s))`.
+    let extents = transform_apply_leaf(
+        &HTuple::Tuple,
+        &|_: Option<&IntTuple>, sub: Option<&IntTuple>| {
+            sub.ok_or_else(bad_coord)
+                .and_then(|s| size(s, &[]))
+                .map(HTuple::Leaf)
+        },
+        Some(crd),
+        Some(shape),
+    )?;
+    inner_product(crd, &prefix_product(&extents, &Stride::Leaf(1.into()))?)
 }
 
 /// Every natural coordinate of `shape`, in colexicographical order.

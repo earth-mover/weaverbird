@@ -27,9 +27,14 @@
 pub mod atuple;
 pub mod error;
 pub mod htuple;
+pub mod shape;
 pub mod typedefs;
 
 pub use atuple::{ArithTuple, StrideScalar, basis_repr, e, is_basis, make_basis_like, proj, unit};
 pub use error::{Error, Result};
 pub use htuple::HTuple;
+pub use shape::{
+    common_coarsening, common_refinement, compatible, coordinates, depth, idx2crd, rank, shape,
+    size,
+};
 pub use typedefs::{Int, IntTuple, Stride};

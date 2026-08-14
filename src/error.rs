@@ -21,6 +21,21 @@ pub enum Error {
     /// A range ran backwards.
     #[error("range [{begin}, {end}) is reversed")]
     ReversedRange { begin: usize, end: usize },
+
+    /// Two shapes have no common refinement: their ranks differ, their
+    /// leaves disagree, or a leaf does not match the size beside it.
+    #[error("no common refinement for {lhs} and {rhs}")]
+    NoRefinement { lhs: String, rhs: String },
+
+    /// Two shapes have no common coarsening. The sizes differ, and the
+    /// integer size is the last resort.
+    #[error("no common coarsening for {lhs} and {rhs}")]
+    NoCoarsening { lhs: String, rhs: String },
+
+    /// A coordinate does not index the shape beside it: the ranks
+    /// differ, or a tuple coordinate met an integer shape.
+    #[error("idx2crd({idx}, {shape})")]
+    BadCoord { idx: String, shape: String },
 }
 
 /// The crate's result alias.

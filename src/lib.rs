@@ -23,6 +23,12 @@
 //! [`ArithTuple`] stores its children as PyCuTe stores them, and its
 //! equality extends trailing positions by zero. `Hash` therefore hashes a
 //! trimmed form, so that equal values hash alike.
+//!
+//! PyCuTe's integers may be symbolic, and `typedefs.is_static` tells a
+//! concrete one from a symbolic one. Here [`Int`] is the only integer, so
+//! `is_static` would always be true. The crate omits it, and the ordering
+//! helpers PyCuTe guards with it — the `_stride_key` sorts in `layout.py`
+//! — collapse to a plain sort.
 
 pub mod atuple;
 pub mod error;
@@ -31,7 +37,10 @@ pub mod shape;
 pub mod stride;
 pub mod typedefs;
 
-pub use atuple::{ArithTuple, StrideScalar, basis_repr, e, is_basis, make_basis_like, proj, unit};
+pub use atuple::{
+    ArithTuple, StrideScalar, basis_repr, e, is_basis, make_basis_like, proj, proj_tuple,
+    proj_tuple_mut, unit,
+};
 pub use error::{Error, Result};
 pub use htuple::HTuple;
 pub use shape::{

@@ -5,7 +5,7 @@
 
 use pinstripe::{
     ArithTuple, HTuple, StrideScalar, atuple::scaled_basis, basis_repr, e, ht, is_basis,
-    make_basis_like, proj, unit,
+    make_basis_like, proj, proj_tuple, proj_tuple_mut, unit,
 };
 
 /// Builds an [`ArithTuple`] from nested parentheses, so the ported cases
@@ -267,4 +267,34 @@ fn make_basis_like_puts_a_unit_at_every_leaf() {
             leaf(&[1]),
         ])
     );
+}
+
+#[test]
+fn proj_tuple_reads_the_sub_tuple_a_basis_names() {
+    let x = ht!((7, (8, 9)));
+    assert_eq!(proj_tuple(&x, &e(&[])).unwrap(), &x);
+    assert_eq!(proj_tuple(&x, &e(&[0])).unwrap(), &ht!(7));
+    assert_eq!(proj_tuple(&x, &e(&[1])).unwrap(), &ht!((8, 9)));
+    assert_eq!(proj_tuple(&x, &e(&[1, 1])).unwrap(), &ht!(9));
+    assert_eq!(proj_tuple(&x, &e(&[1, 1]).scale(5)).unwrap(), &ht!(9));
+}
+
+#[test]
+fn proj_tuple_mut_writes_through() {
+    let mut x = HTuple::Tuple(vec![HTuple::Leaf(vec![1]), HTuple::Leaf(vec![2])]);
+    if let HTuple::Leaf(slot) = proj_tuple_mut(&mut x, &e(&[1])).unwrap() {
+        slot.push(3);
+    }
+    assert_eq!(
+        x,
+        HTuple::Tuple(vec![HTuple::Leaf(vec![1]), HTuple::Leaf(vec![2, 3])])
+    );
+}
+
+#[test]
+fn proj_tuple_rejects_a_sum_and_a_path_off_the_end() {
+    let sum = e(&[0]).scale(3).add(&e(&[1]).scale(5)).unwrap();
+    assert!(proj_tuple(&ht!((7, 8)), &sum).is_err());
+    assert!(proj_tuple(&ht!((7, 8)), &e(&[2])).is_err());
+    assert!(proj_tuple_mut(&mut ht!((7, 8)), &e(&[2])).is_err());
 }

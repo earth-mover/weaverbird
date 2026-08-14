@@ -1,12 +1,16 @@
 //! Ported from `test/test_htuple.py`.
 //!
-//! The cases that need `Layout`, `inner_product`, `prefix_product`,
-//! `idx2crd`, or `slice_` / `dice_` wait for those modules.
+//! The cases that need `Layout`, `inner_product`, `prefix_product`, or
+//! `idx2crd` wait for those modules.
 #![expect(clippy::unwrap_used, reason = "a test asserts the happy path")]
 
 use pinstripe::{
     HTuple, ht,
-    htuple::{congruent, weakly_congruent, zip_transform_leaf},
+    htuple::{
+        congruent, dice_, fold_leaf, slice_, transform_apply_leaf, transform_apply_leaf2,
+        transform_apply_leaf4, weakly_congruent, zip_leaves, zip_transform_leaf,
+        zip3_transform_leaf,
+    },
 };
 
 #[test]
@@ -189,4 +193,152 @@ fn weakly_congruent_is_the_coarsening_order() {
     assert!(weakly_congruent(&ht!((3, 4)), &ht!((5, (6, 7)))));
     assert!(!weakly_congruent(&ht!((3, (4, 5))), &ht!((5, 6))));
     assert!(!weakly_congruent(&ht!((1, 2, 3)), &ht!((1, 2))));
+}
+
+/// The product of every leaf, counting an absent tuple as the empty
+/// product. The leaf function of the `transform_apply_leaf` cases.
+fn prod(t: Option<&HTuple<i64>>) -> i64 {
+    t.map_or(1, |x| x.leaves().into_iter().product())
+}
+
+#[test]
+fn zip3_transform_leaf_maps_triples_of_leaves() {
+    let sum = zip3_transform_leaf(
+        &|a, b, c| Ok(a + b + c),
+        &ht!(((1, (2, 3)), 4)),
+        &ht!(((10, (20, 30)), 40)),
+        &ht!(((100, (200, 300)), 400)),
+    );
+    assert_eq!(sum.unwrap(), ht!(((111, (222, 333)), 444)));
+}
+
+#[test]
+fn zip3_transform_leaf_rejects_a_profile_mismatch() {
+    let f = |a: &i64, b: &i64, c: &i64| Ok(a + b + c);
+    assert!(zip3_transform_leaf(&f, &ht!((1, 2)), &ht!((1, (2, 3))), &ht!((1, 2))).is_err());
+}
+
+#[test]
+fn transform_apply_leaf_faces_each_leaf_of_the_driver() {
+    let total = transform_apply_leaf(
+        &|parts: Vec<i64>| parts.into_iter().sum(),
+        &|a, b| Ok(prod(a) * prod(b)),
+        Some(&ht!((1, 2))),
+        Some(&ht!(((10, 20), 30))),
+    );
+    assert_eq!(total.unwrap(), 200 + 60);
+}
+
+#[test]
+fn transform_apply_leaf_pads_the_shorter_tuple() {
+    let total = transform_apply_leaf(
+        &|parts: Vec<i64>| parts.into_iter().sum(),
+        &|a, b| Ok(prod(a) * prod(b)),
+        Some(&ht!((1, 2))),
+        Some(&ht!((10))),
+    );
+    assert_eq!(total.unwrap(), 10 + 2);
+}
+
+#[test]
+fn transform_apply_leaf_applies_f_to_a_leaf_driver() {
+    let total = transform_apply_leaf(
+        &|parts: Vec<i64>| parts.into_iter().sum(),
+        &|a, b| Ok(prod(a) * prod(b)),
+        Some(&ht!(7)),
+        Some(&ht!((2, 3))),
+    );
+    assert_eq!(total.unwrap(), 42);
+}
+
+#[test]
+fn transform_apply_leaf_rejects_a_leaf_where_it_must_zip() {
+    let total = transform_apply_leaf(
+        &|parts: Vec<i64>| parts.into_iter().sum(),
+        &|a, b| Ok(prod(a) * prod(b)),
+        Some(&ht!((1, 2))),
+        Some(&ht!(5)),
+    );
+    assert!(total.is_err());
+}
+
+#[test]
+fn transform_apply_leaf2_zips_two_extra_tuples() {
+    let total = transform_apply_leaf2(
+        &|parts: Vec<i64>| parts.into_iter().sum(),
+        &|a, b, c| Ok(prod(a) * prod(b) * prod(c)),
+        Some(&ht!((1, 2))),
+        Some(&ht!((10, 20))),
+        Some(&ht!((100, 200))),
+    );
+    assert_eq!(total.unwrap(), 1000 + 8000);
+}
+
+#[test]
+fn transform_apply_leaf4_zips_four_extra_tuples() {
+    let total = transform_apply_leaf4(
+        &|parts: Vec<i64>| parts.into_iter().sum(),
+        &|a, b, c, d, e| Ok(prod(a) * prod(b) * prod(c) * prod(d) * prod(e)),
+        Some(&ht!((1, 2))),
+        Some(&ht!((3, 4))),
+        Some(&ht!((5, 6))),
+        Some(&ht!((7, 8))),
+        Some(&ht!((9, 10))),
+    );
+    assert_eq!(total.unwrap(), 945 + 3840);
+}
+
+#[test]
+fn zip_leaves_faces_a_leaf_with_a_sub_tuple() {
+    let a = ht!((1, 2));
+    let b = ht!(((10, 20), 30));
+    assert_eq!(
+        zip_leaves(&a, &b).unwrap(),
+        vec![(&1, &ht!((10, 20))), (&2, &ht!(30))]
+    );
+}
+
+#[test]
+fn zip_leaves_descends_into_matching_profiles() {
+    let a = ht!(((1, 2), 3));
+    let b = ht!(((10, 20), 30));
+    assert_eq!(
+        zip_leaves(&a, &b).unwrap(),
+        vec![(&1, &ht!(10)), (&2, &ht!(20)), (&3, &ht!(30))]
+    );
+}
+
+#[test]
+fn zip_leaves_rejects_a_finer_first_tuple() {
+    assert!(zip_leaves(&ht!(((1, 2), 3)), &ht!((10, 30))).is_err());
+}
+
+#[test]
+fn fold_leaf_runs_over_the_pairs_left_to_right() {
+    let total = fold_leaf(
+        &|acc, a: &i64, b: &HTuple<i64>| acc + a * b.product(),
+        0,
+        &ht!((1, 2)),
+        &ht!(((10, 20), 30)),
+    );
+    assert_eq!(total.unwrap(), 200 + 60);
+}
+
+#[test]
+fn slice_and_dice_split_on_the_open_modes() {
+    let crd = HTuple::Tuple(vec![HTuple::Leaf(None), HTuple::Leaf(Some(3_i64))]);
+    let shape = ht!(((2, 3), 4));
+    assert_eq!(slice_(&crd, &shape).unwrap(), ht!(((2, 3))));
+    assert_eq!(dice_(&crd, &shape).unwrap(), ht!((4)));
+}
+
+#[test]
+fn slice_and_dice_flatten_one_level() {
+    let crd = HTuple::Tuple(vec![
+        HTuple::Tuple(vec![HTuple::Leaf(None), HTuple::Leaf(Some(1_i64))]),
+        HTuple::Leaf(None),
+    ]);
+    let shape = ht!(((2, 3), 4));
+    assert_eq!(slice_(&crd, &shape).unwrap(), ht!((2, 4)));
+    assert_eq!(dice_(&crd, &shape).unwrap(), ht!((3)));
 }

@@ -123,6 +123,19 @@ impl Layout {
         Ok(Layout::from_parts(shape.clone(), compact_in_order(&extents, modes.into_iter(), shape)))
     }
 
+    /// CuTe `rank(layout)`: the top-level mode count, read off the shape.
+    /// A layout over a leaf shape has rank 1.
+    ///
+    /// ```
+    /// # use weaverbird::layout;
+    /// assert_eq!(layout!((4, 8):(8, 1)).rank(), 2);
+    /// assert_eq!(layout!(((3, 2), 4):((4, 12), 1)).rank(), 2);
+    /// assert_eq!(layout!(4:1).rank(), 1);
+    /// ```
+    pub fn rank(&self) -> usize {
+        self.shape.rank()
+    }
+
     /// A compact layout with this shape, ordered by this layout's
     /// strides.
     ///

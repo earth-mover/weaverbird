@@ -42,11 +42,31 @@ use crate::{
 /// assert_eq!(layout!((4, 8):(8, 1)).eval(&ht!((2, 3))).unwrap(), StrideScalar::Int(19));
 /// ```
 #[derive(Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+// Deserialize goes through `Layout::new`, so a decoded layout is congruent like any other.
+#[cfg_attr(feature = "serde", serde(try_from = "LayoutParts"))]
 pub struct Layout {
     /// The domain.
     pub shape: IntTuple,
     /// The map. Congruent with `shape`.
     pub stride: Stride,
+}
+
+/// The wire form of a [`Layout`]: the two halves, before the congruence check.
+#[cfg(feature = "serde")]
+#[derive(serde::Deserialize)]
+struct LayoutParts {
+    shape: IntTuple,
+    stride: Stride,
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<LayoutParts> for Layout {
+    type Error = Error;
+
+    fn try_from(parts: LayoutParts) -> Result<Self> {
+        Layout::new(parts.shape, parts.stride)
+    }
 }
 
 impl Layout {

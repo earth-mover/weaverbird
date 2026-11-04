@@ -38,6 +38,7 @@ pub mod htuple;
 pub mod layout;
 pub mod shape;
 pub mod stride;
+pub mod tensor;
 pub mod typedefs;
 
 pub use algebra::{greatest_common_domain, layout_add};
@@ -46,4 +47,5 @@ pub use error::{Error, Result};
 pub use htuple::{HTuple, Leaves};
 pub use layout::{Layout, Profile, Scale, Tiler};
 pub use shape::Coordinates;
+pub use tensor::{Accessor, Tensor};
 pub use typedefs::{Int, IntTuple, Stride};

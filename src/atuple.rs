@@ -42,6 +42,7 @@ use crate::{
 /// `a`, so an ordinary integer-strided layout is the empty-path case of
 /// the same algebra. Nothing forks.
 #[derive(Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum StrideScalar {
     Int(Int),
     Arith(ArithTuple),
@@ -50,6 +51,7 @@ pub enum StrideScalar {
 /// A hierarchical tuple of integers under elementwise addition and
 /// scalar multiplication. Trailing positions are implicitly zero.
 #[derive(Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ArithTuple {
     data: Vec<StrideScalar>,
 }

@@ -9,6 +9,7 @@ use crate::error::{Error, Result};
 
 /// A leaf, or a tuple of hierarchical tuples.
 #[derive(Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum HTuple<T> {
     Leaf(T),
     Tuple(Vec<HTuple<T>>),

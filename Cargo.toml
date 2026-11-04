@@ -1,6 +1,6 @@
 [package]
 name = "weaverbird"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "A Rust transliteration of the CuTe layout algebra"
@@ -9,8 +9,16 @@ repository = "https://github.com/earth-mover/weaverbird"
 keywords = ["layout", "tensor", "cute", "stride", "tiling"]
 categories = ["data-structures", "mathematics"]
 
+[features]
+# Derives on the plain-data vocabulary, for a caller that puts a layout on a wire.
+serde = ["dep:serde"]
+
 [dependencies]
+serde = { version = "1", optional = true, features = ["derive"] }
 thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"
 
 [lints.rust]
 # Safety
